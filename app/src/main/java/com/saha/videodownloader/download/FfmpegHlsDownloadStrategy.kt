@@ -14,7 +14,8 @@ class FfmpegHlsDownloadStrategy(
     private val onStarted: (() -> Unit)? = null,
     private val onFinished: (() -> Unit)? = null,
     private val userAgent: String? = null,
-    private val refererUrl: String? = null
+    private val refererUrl: String? = null,
+    private val pageTitle: String? = null
 ) : HlsDownloadStrategy {
 
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -22,7 +23,13 @@ class FfmpegHlsDownloadStrategy(
     override fun download(url: String, context: Context) {
         onStarted?.let { mainHandler.post(it) }
         // Registers job in downloads list before FGS starts.
-        FfmpegMuxService.start(context, url, userAgent, refererUrl)
+        FfmpegMuxService.start(
+            context = context,
+            url = url,
+            userAgent = userAgent,
+            refererUrl = refererUrl,
+            pageTitle = pageTitle
+        )
         mainHandler.post {
             // Service owns the long-running work; clear the button spinner promptly.
             onFinished?.invoke()

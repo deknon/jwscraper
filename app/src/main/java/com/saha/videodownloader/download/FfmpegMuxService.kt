@@ -74,6 +74,7 @@ class FfmpegMuxService : Service() {
                 val userAgent = intent.getStringExtra(EXTRA_USER_AGENT)
                     ?: DownloadHelper.MOBILE_CHROME_UA
                 val refererUrl = intent.getStringExtra(EXTRA_REFERER_URL)
+                val pageTitle = intent.getStringExtra(EXTRA_PAGE_TITLE)
                 if (FfmpegJobTracker.get(jobId) == null) {
                     FfmpegJobTracker.start(
                         id = jobId,
@@ -83,7 +84,7 @@ class FfmpegMuxService : Service() {
                         userAgent = userAgent
                     )
                 }
-                startMux(jobId, url, filename, userAgent, refererUrl)
+                startMux(jobId, url, filename, userAgent, refererUrl, pageTitle)
             }
         }
         return START_NOT_STICKY
@@ -92,13 +93,14 @@ class FfmpegMuxService : Service() {
     private fun startMux(
         jobId: String,
         url: String,
-        filename: String,
+        provisionalFilename: String,
         userAgent: String,
-        refererUrl: String?
+        refererUrl: String?,
+        pageTitle: String?
     ) {
         try {
             VideoDownloadService.ensureChannel(this)
-            val notification = buildNotification(jobId, filename, 0, "เริ่ม mux…")
+            val notification = buildNotification(jobId, provisionalFilename, 0, "เริ่ม mux…")
             ServiceCompat.startForeground(
                 this,
                 NOTIFICATION_ID,
@@ -125,19 +127,33 @@ class FfmpegMuxService : Service() {
         if (init.isFailure) {
             val detail = init.exceptionOrNull()?.message ?: "ffmpeg-kit init failed"
             FfmpegJobTracker.fail(jobId, "เริ่ม ffmpeg ไม่ได้: $detail")
-            updateNotification(jobId, filename, 0, "เริ่ม ffmpeg ไม่ได้", ongoing = false)
+            updateNotification(jobId, provisionalFilename, 0, "เริ่ม ffmpeg ไม่ได้", ongoing = false)
             stopSelfSafely()
             return
         }
 
         val workDir = File(cacheDir, "hls_mux").apply { mkdirs() }
-        val outputFile = File(workDir, filename)
-        if (outputFile.exists()) outputFile.delete()
 
         FfmpegJobTracker.updateProgress(jobId, 0f, "กำลังดึง playlist…")
         prepareExecutor.execute {
+            var filename = provisionalFilename
             try {
                 WebViewCookieHelper.flush()
+                filename = DownloadFilenameResolver.resolve(
+                    mediaUrl = url,
+                    pageTitle = pageTitle,
+                    pageUrl = refererUrl,
+                    userAgent = userAgent,
+                    defaultExt = ".mp4",
+                    probeNetwork = true
+                )
+                if (filename != provisionalFilename) {
+                    FfmpegJobTracker.updateTitle(jobId, filename)
+                    updateNotification(jobId, filename, 0, "กำลังดึง playlist…")
+                }
+                val outputFile = File(workDir, filename)
+                if (outputFile.exists()) outputFile.delete()
+
                 val requestHeaders = CapturedMediaHeaders.mergeFor(url, refererUrl, userAgent)
                 val prepared = HlsPlaylistPreparer.prepare(
                     mediaUrl = url,
@@ -433,17 +449,23 @@ class FfmpegMuxService : Service() {
         const val EXTRA_FILENAME = "extra_filename"
         const val EXTRA_USER_AGENT = "extra_user_agent"
         const val EXTRA_REFERER_URL = "extra_referer_url"
+        const val EXTRA_PAGE_TITLE = "extra_page_title"
         private const val NOTIFICATION_ID = 42
 
         fun start(
             context: Context,
             url: String,
             userAgent: String? = null,
-            refererUrl: String? = null
+            refererUrl: String? = null,
+            pageTitle: String? = null
         ): String {
             val appContext = context.applicationContext
             FfmpegJobTracker.init(appContext)
-            val filename = buildFilename(url)
+            val filename = DownloadFilenameResolver.fromHints(
+                mediaUrl = url,
+                pageTitle = pageTitle,
+                defaultExt = ".mp4"
+            )
             val jobId = "ffmpeg-job:${UUID.randomUUID()}"
             val ua = userAgent ?: DownloadHelper.MOBILE_CHROME_UA
             FfmpegJobTracker.start(
@@ -461,6 +483,7 @@ class FfmpegMuxService : Service() {
                 putExtra(EXTRA_FILENAME, filename)
                 putExtra(EXTRA_USER_AGENT, ua)
                 putExtra(EXTRA_REFERER_URL, refererUrl)
+                putExtra(EXTRA_PAGE_TITLE, pageTitle)
             }
             try {
                 ContextCompat.startForegroundService(appContext, intent)
@@ -472,16 +495,6 @@ class FfmpegMuxService : Service() {
                 )
             }
             return jobId
-        }
-
-        private fun buildFilename(url: String): String {
-            val host = try {
-                URI(url).host?.replace('.', '_') ?: "hls"
-            } catch (_: Exception) {
-                "hls"
-            }
-            val sanitized = host.replace(Regex("""[^\w\-.]"""), "_")
-            return "${sanitized}_${System.currentTimeMillis()}.mp4"
         }
 
         /**

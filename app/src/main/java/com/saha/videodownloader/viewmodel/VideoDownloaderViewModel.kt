@@ -53,9 +53,25 @@ class VideoDownloaderViewModel(application: Application) : AndroidViewModel(appl
     private val _currentPageUrl = MutableStateFlow<String?>(null)
     val currentPageUrl: StateFlow<String?> = _currentPageUrl.asStateFlow()
 
+    /** Document title from WebChromeClient — used for download filenames. */
+    private val _currentPageTitle = MutableStateFlow<String?>(null)
+    val currentPageTitle: StateFlow<String?> = _currentPageTitle.asStateFlow()
+
     fun setCurrentPageUrl(url: String?) {
         if (url.isNullOrBlank() || url == "about:blank") return
+        if (_currentPageUrl.value != url) {
+            // Title belongs to the previous page until onReceivedTitle fires.
+            _currentPageTitle.value = null
+        }
         _currentPageUrl.value = url
+    }
+
+    fun setCurrentPageTitle(title: String?) {
+        val trimmed = title?.trim().orEmpty()
+        if (trimmed.isEmpty() || trimmed.equals("about:blank", true)) {
+            return
+        }
+        _currentPageTitle.value = trimmed
     }
 
     /**

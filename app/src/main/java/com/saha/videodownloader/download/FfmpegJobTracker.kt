@@ -85,6 +85,14 @@ object FfmpegJobTracker {
         }
     }
 
+    fun updateTitle(id: String, title: String) {
+        val trimmed = title.trim()
+        if (trimmed.isEmpty()) return
+        update(id) {
+            it.copy(title = trimmed, updatedAtMs = System.currentTimeMillis())
+        }
+    }
+
     fun complete(id: String) {
         jobs.remove(id)
         publish()

@@ -62,7 +62,9 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -78,6 +80,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.saha.videodownloader.download.DownloadFilenameResolver
 import com.saha.videodownloader.download.DownloadHelper
 import com.saha.videodownloader.download.FfmpegJobTracker
 import com.saha.videodownloader.download.WebViewCookieHelper
@@ -238,12 +241,33 @@ fun MainScreen(
                     onDownloadItem = { item ->
                         // Stay on the WebView — never navigate to the downloads library.
                         listExpanded = false
+                        val pageUrl = viewModel.currentPageUrl.value
+                            ?: urlInput.takeIf {
+                                it.startsWith("http://") || it.startsWith("https://")
+                            }
+                        val pageTitle = viewModel.currentPageTitle.value
+                        val userAgent = viewModel.currentUserAgent()
                         when (item.type) {
                             VideoType.MP4 -> {
-                                viewModel.setDownloading(true)
-                                DownloadHelper.downloadMp4(context, item.url)
-                                viewModel.setDownloading(false)
                                 scope.launch {
+                                    viewModel.setDownloading(true)
+                                    val filename = withContext(Dispatchers.IO) {
+                                        DownloadFilenameResolver.resolve(
+                                            mediaUrl = item.url,
+                                            pageTitle = pageTitle,
+                                            pageUrl = pageUrl,
+                                            userAgent = userAgent,
+                                            defaultExt = ".mp4"
+                                        )
+                                    }
+                                    DownloadHelper.downloadMp4(
+                                        context = context,
+                                        url = item.url,
+                                        suggestedName = filename,
+                                        pageUrl = pageUrl,
+                                        userAgent = userAgent
+                                    )
+                                    viewModel.setDownloading(false)
                                     snackbarHostState.showSnackbar(
                                         "เริ่มดาวน์โหลดแล้ว — อยู่หน้าเว็บต่อได้"
                                     )
@@ -264,17 +288,30 @@ fun MainScreen(
                                         )
                                     }
                                 },
-                                userAgent = viewModel.currentUserAgent(),
-                                refererUrl = viewModel.currentPageUrl.value
-                                    ?: urlInput.takeIf {
-                                        it.startsWith("http://") || it.startsWith("https://")
-                                    }
+                                userAgent = userAgent,
+                                refererUrl = pageUrl,
+                                pageTitle = pageTitle
                             )
                             VideoType.UNKNOWN -> {
-                                viewModel.setDownloading(true)
-                                DownloadHelper.handleUnknownOrOther(context, item.url)
-                                viewModel.setDownloading(false)
                                 scope.launch {
+                                    viewModel.setDownloading(true)
+                                    val filename = withContext(Dispatchers.IO) {
+                                        DownloadFilenameResolver.resolve(
+                                            mediaUrl = item.url,
+                                            pageTitle = pageTitle,
+                                            pageUrl = pageUrl,
+                                            userAgent = userAgent,
+                                            defaultExt = ".mp4"
+                                        )
+                                    }
+                                    DownloadHelper.downloadMp4(
+                                        context = context,
+                                        url = item.url,
+                                        suggestedName = filename,
+                                        pageUrl = pageUrl,
+                                        userAgent = userAgent
+                                    )
+                                    viewModel.setDownloading(false)
                                     snackbarHostState.showSnackbar(
                                         "เริ่มดาวน์โหลดแล้ว — อยู่หน้าเว็บต่อได้"
                                     )
@@ -631,7 +668,12 @@ private fun VideoWebView(
                     }
                 }
 
-                webChromeClient = WebChromeClient()
+                webChromeClient = object : WebChromeClient() {
+                    override fun onReceivedTitle(view: WebView?, title: String?) {
+                        super.onReceivedTitle(view, title)
+                        latestViewModel.setCurrentPageTitle(title)
+                    }
+                }
                 onWebViewReady(this)
             }
         },
