@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<shortcuts xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- Helps modern Android / HyperOS surface this app in the share sheet. -->
+    <share-target android:targetClass="com.saha.videodownloader.MainActivity">
+        <data android:mimeType="text/plain" />
+        <data android:mimeType="text/*" />
+        <category android:name="com.saha.videodownloader.sharing.SHARE_URL" />
+    </share-target>
+
+    <shortcut
+        android:shortcutId="share_url"
+        android:enabled="true"
+        android:icon="@drawable/ic_download"
+        android:shortcutShortLabel="@string/share_shortcut_short_label"
+        android:shortcutLongLabel="@string/share_shortcut_long_label">
+        <intent
+            android:action="android.intent.action.VIEW"
+            android:targetPackage="com.saha.videodownloader"
+            android:targetClass="com.saha.videodownloader.MainActivity" />
+        <categories android:name="com.saha.videodownloader.sharing.SHARE_URL" />
+    </shortcut>
+</shortcuts>

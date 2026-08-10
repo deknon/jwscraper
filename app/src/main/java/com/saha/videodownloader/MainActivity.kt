@@ -3,8 +3,10 @@ package com.saha.videodownloader
 import android.Manifest
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
@@ -40,7 +42,7 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         requestNotificationPermissionIfNeeded()
-        handleIncomingIntent(intent)
+        handleIncomingIntent(intent, showFeedback = true)
         enableEdgeToEdge()
         setContent {
             SahaVideoDownloaderTheme {
@@ -55,7 +57,7 @@ class MainActivity : ComponentActivity() {
                 }
                 val intentListener = remember {
                     Consumer<Intent> { incoming ->
-                        handleIncomingIntent(incoming)
+                        handleIncomingIntent(incoming, showFeedback = true)
                         latestShowDownloadsReset.value.invoke()
                     }
                 }
@@ -84,30 +86,83 @@ class MainActivity : ComponentActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
-        handleIncomingIntent(intent)
+        handleIncomingIntent(intent, showFeedback = true)
     }
 
-    private fun handleIncomingIntent(intent: Intent?) {
-        val url = extractUrl(intent) ?: return
-        viewModel.requestNavigate(url)
-    }
+    private fun handleIncomingIntent(intent: Intent?, showFeedback: Boolean) {
+        if (intent == null) return
+        val isShareOrView = intent.action == Intent.ACTION_SEND ||
+            intent.action == Intent.ACTION_SEND_MULTIPLE ||
+            intent.action == Intent.ACTION_VIEW
+        if (!isShareOrView) return
 
-    private fun extractUrl(intent: Intent?): String? {
-        if (intent == null) return null
-        return when (intent.action) {
-            Intent.ACTION_VIEW -> intent.dataString?.takeIf { looksLikeUrl(it) }
-            Intent.ACTION_SEND -> {
-                val text = intent.getStringExtra(Intent.EXTRA_TEXT).orEmpty()
-                extractFirstUrl(text)
+        val url = extractUrl(intent)
+        if (url != null) {
+            viewModel.requestNavigate(url)
+            if (showFeedback) {
+                Toast.makeText(this, R.string.share_received_toast, Toast.LENGTH_SHORT).show()
             }
-            else -> null
+        } else if (showFeedback &&
+            (intent.action == Intent.ACTION_SEND || intent.action == Intent.ACTION_SEND_MULTIPLE)
+        ) {
+            Toast.makeText(this, R.string.share_invalid_toast, Toast.LENGTH_SHORT).show()
         }
     }
 
+    private fun extractUrl(intent: Intent): String? {
+        when (intent.action) {
+            Intent.ACTION_VIEW -> {
+                intent.dataString?.let { if (looksLikeUrl(it)) return normalizeSharedUrl(it) }
+            }
+            Intent.ACTION_SEND, Intent.ACTION_SEND_MULTIPLE -> {
+                intent.getStringExtra(Intent.EXTRA_TEXT)
+                    ?.let { extractFirstUrl(it) }
+                    ?.let { return it }
+
+                intent.getStringExtra(Intent.EXTRA_SUBJECT)
+                    ?.let { extractFirstUrl(it) }
+                    ?.let { return it }
+
+                intent.dataString
+                    ?.let { extractFirstUrl(it) }
+                    ?.let { return it }
+
+                intent.clipData?.let { clip ->
+                    for (i in 0 until clip.itemCount) {
+                        val item = clip.getItemAt(i)
+                        item.text?.toString()?.let { extractFirstUrl(it) }?.let { return it }
+                        item.uri?.toString()?.let { extractFirstUrl(it) }?.let { return it }
+                        item.htmlText?.let { extractFirstUrl(it) }?.let { return it }
+                    }
+                }
+
+                val streams = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                    intent.getParcelableArrayListExtra(Intent.EXTRA_STREAM, Uri::class.java)
+                } else {
+                    @Suppress("DEPRECATION")
+                    intent.getParcelableArrayListExtra(Intent.EXTRA_STREAM)
+                }
+                streams?.firstOrNull()
+                    ?.toString()
+                    ?.let { extractFirstUrl(it) }
+                    ?.let { return it }
+            }
+        }
+        return null
+    }
+
     private fun extractFirstUrl(text: String): String? {
-        val match = Regex("""https?://\S+""").find(text)?.value
-            ?: Regex("""(?i)\b[\w.-]+\.[a-z]{2,}(/\S*)?""").find(text)?.value
-        return match?.trim()?.trimEnd('.', ',', ')', ']', '"', '\'')
+        val httpMatch = Regex("""https?://[^\s<>"']+""").find(text)?.value
+        val raw = httpMatch
+            ?: Regex("""(?i)\b(?:www\.)?[\w.-]+\.[a-z]{2,}(?:/[^\s<>"']*)?""").find(text)?.value
+            ?: return null
+        return normalizeSharedUrl(raw.trim().trimEnd('.', ',', ';', ')', ']', '"', '\'', '>', '”', '’'))
+    }
+
+    private fun normalizeSharedUrl(value: String): String {
+        val trimmed = value.trim()
+        if (trimmed.startsWith("http://") || trimmed.startsWith("https://")) return trimmed
+        return "https://$trimmed"
     }
 
     private fun looksLikeUrl(value: String): Boolean =
