@@ -7,6 +7,7 @@ import android.net.Uri
 import android.os.Build
 import android.os.Environment
 import android.widget.Toast
+import com.saha.videodownloader.util.BatteryOptimizationPrompt
 import java.net.URI
 
 object DownloadHelper {
@@ -65,11 +66,15 @@ object DownloadHelper {
                 dialog.dismiss()
                 try {
                     when (which) {
-                        0 -> FfmpegHlsDownloadStrategy(
-                            onStarted = onDownloadStarted,
-                            onFinished = onDownloadFinished
-                        ).download(url, context)
+                        0 -> {
+                            BatteryOptimizationPrompt.maybePrompt(context)
+                            FfmpegHlsDownloadStrategy(
+                                onStarted = onDownloadStarted,
+                                onFinished = onDownloadFinished
+                            ).download(url, context)
+                        }
                         1 -> {
+                            BatteryOptimizationPrompt.maybePrompt(context)
                             onDownloadStarted?.invoke()
                             try {
                                 media3HlsStrategy.download(url, context)

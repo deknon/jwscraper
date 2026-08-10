@@ -41,4 +41,8 @@ class DownloadsViewModel(application: Application) : AndroidViewModel(applicatio
             _playingId.value = null
         }
     }
+
+    fun cancelFfmpeg(item: LibraryDownload) {
+        repository.cancelFfmpegJob(item.id)
+    }
 }

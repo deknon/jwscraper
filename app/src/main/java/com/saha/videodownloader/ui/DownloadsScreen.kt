@@ -138,6 +138,7 @@ fun DownloadsScreen(
                                     }
                                 }
                             },
+                            onCancel = { viewModel.cancelFfmpeg(item) },
                             onRemove = { viewModel.remove(item) }
                         )
                         HorizontalDivider()
@@ -154,8 +155,13 @@ private fun DownloadRow(
     onPlay: () -> Unit,
     onOpen: () -> Unit,
     onShare: () -> Unit,
+    onCancel: () -> Unit,
     onRemove: () -> Unit
 ) {
+    val isActiveJob = item.id.startsWith("ffmpeg-job:") &&
+        (item.state == LibraryDownload.State.DOWNLOADING ||
+            item.state == LibraryDownload.State.QUEUED)
+
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -210,23 +216,36 @@ private fun DownloadRow(
 
         Spacer(modifier = Modifier.height(8.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            when (item.kind) {
-                LibraryDownload.Kind.MEDIA3_CACHE -> {
+            when {
+                isActiveJob -> {
+                    OutlinedButton(onClick = onCancel) {
+                        Text("ยกเลิก")
+                    }
+                }
+                item.kind == LibraryDownload.Kind.MEDIA3_CACHE -> {
                     Button(onClick = onPlay, enabled = item.canPlay) {
                         Text("เล่น")
                     }
+                    OutlinedButton(onClick = onRemove) {
+                        Text("ลบ")
+                    }
                 }
-                LibraryDownload.Kind.FFMPEG_MP4 -> {
+                else -> {
                     Button(onClick = onOpen, enabled = item.canPlay) {
                         Text("เปิด")
                     }
                     OutlinedButton(onClick = onShare, enabled = item.canPlay) {
                         Text("แชร์")
                     }
+                    OutlinedButton(onClick = onRemove) {
+                        Text("ลบ")
+                    }
                 }
             }
-            OutlinedButton(onClick = onRemove) {
-                Text("ลบ")
+            if (item.state == LibraryDownload.State.FAILED && item.id.startsWith("ffmpeg-job:")) {
+                OutlinedButton(onClick = onRemove) {
+                    Text("ปิด")
+                }
             }
         }
     }
@@ -234,11 +253,12 @@ private fun DownloadRow(
 
 private fun stateLabel(item: LibraryDownload): String {
     val pct = (item.progressPercent * 100).toInt()
+    val detail = item.statusMessage
     return when (item.state) {
-        LibraryDownload.State.QUEUED -> "รอคิว"
-        LibraryDownload.State.DOWNLOADING -> "กำลังดาวน์โหลด $pct%"
+        LibraryDownload.State.QUEUED -> detail ?: "รอคิว"
+        LibraryDownload.State.DOWNLOADING -> detail ?: "กำลังดาวน์โหลด $pct%"
         LibraryDownload.State.COMPLETED -> "เสร็จแล้ว"
-        LibraryDownload.State.FAILED -> "ล้มเหลว"
+        LibraryDownload.State.FAILED -> detail ?: "ล้มเหลว"
         LibraryDownload.State.REMOVING -> "กำลังลบ…"
         LibraryDownload.State.RESTARTING -> "เริ่มใหม่…"
         LibraryDownload.State.STOPPED -> "หยุดชั่วคราว"
