@@ -30,9 +30,10 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -186,11 +187,11 @@ fun MainScreen(
         }
     }
 
-    // Put chrome in Scaffold topBar/bottomBar so WebView cannot paint over them
-    // (HyperOS / edge-to-edge bug: AndroidView WebView sometimes covered the URL row).
+    // Put chrome in Scaffold topBar/bottomBar so WebView cannot paint over them.
+    // Custom bars must pad status/navigation bars themselves under enableEdgeToEdge().
     Scaffold(
         modifier = modifier.fillMaxSize(),
-        contentWindowInsets = WindowInsets.safeDrawing,
+        contentWindowInsets = WindowInsets(0, 0, 0, 0),
         topBar = {
             CompactTopChrome(
                 detectedCount = detectedVideos.size,
@@ -236,6 +237,7 @@ fun MainScreen(
         },
         bottomBar = {
             Surface(
+                modifier = Modifier.fillMaxWidth(),
                 color = MaterialTheme.colorScheme.surface,
                 tonalElevation = 2.dp,
                 shadowElevation = 4.dp
@@ -286,7 +288,9 @@ fun MainScreen(
                         }
                     },
                     onClear = { viewModel.clearDetectedUrls() },
-                    modifier = Modifier.fillMaxWidth()
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .navigationBarsPadding()
                 )
             }
         },
@@ -382,8 +386,7 @@ private fun CompactTopChrome(
     onClearSiteData: () -> Unit,
     modifier: Modifier = Modifier
 ) {
-    // Single compact row — stays in Scaffold topBar so status-bar insets apply
-    // and WebView cannot cover the URL field.
+    // Surface draws behind the status bar; row content is padded below it.
     Surface(
         modifier = modifier.fillMaxWidth(),
         color = MaterialTheme.colorScheme.primaryContainer,
@@ -393,6 +396,7 @@ private fun CompactTopChrome(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
+                .statusBarsPadding()
                 .heightIn(min = 48.dp)
                 .padding(horizontal = 4.dp, vertical = 6.dp),
             verticalAlignment = Alignment.CenterVertically,
