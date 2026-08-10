@@ -1,7 +1,12 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">saha Video Downloader</string>
+    <string name="share_target_label">ดาวน์โหลดวิดีโอ (saha)</string>
+    <string name="share_received_toast">เปิดลิงก์ที่แชร์มาแล้ว</string>
+    <string name="share_invalid_toast">ไม่พบ URL ในข้อความที่แชร์</string>
     <string name="download_notification_channel_name">HLS downloads</string>
     <string name="download_notification_channel_description">ความคืบหน้าการดาวน์โหลดวิดีโอ HLS</string>
     <string name="download_notification_message">กำลังดาวน์โหลด HLS…</string>
+    <string name="share_shortcut_short_label">แชร์ URL</string>
+    <string name="share_shortcut_long_label">แชร์ URL มาดาวน์โหลดวิดีโอ</string>
 </resources>
