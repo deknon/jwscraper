@@ -9,13 +9,11 @@ import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
 import android.util.Log
-import android.webkit.CookieManager
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.app.ServiceCompat
 import androidx.core.content.ContextCompat
 import com.arthenica.ffmpegkit.FFmpegKit
-import com.arthenica.ffmpegkit.FFprobeKit
 import com.arthenica.ffmpegkit.ReturnCode
 import com.arthenica.ffmpegkit.Session
 import com.arthenica.ffmpegkit.Statistics
@@ -24,9 +22,9 @@ import com.saha.videodownloader.R
 import java.io.File
 import java.net.URI
 import java.util.UUID
+import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
-import kotlin.math.max
 
 /**
  * Foreground service that runs ffmpeg HLS→MP4 mux.
@@ -38,6 +36,9 @@ import kotlin.math.max
 class FfmpegMuxService : Service() {
 
     private val activeSessionId = AtomicReference<Long?>(null)
+    private val prepareExecutor = Executors.newSingleThreadExecutor()
+    private val localPlaylistRef = AtomicReference<File?>(null)
+    private val offlineTempDirRef = AtomicReference<File?>(null)
 
     override fun onCreate() {
         super.onCreate()
@@ -72,16 +73,29 @@ class FfmpegMuxService : Service() {
                     ?: "hls_${System.currentTimeMillis()}.mp4"
                 val userAgent = intent.getStringExtra(EXTRA_USER_AGENT)
                     ?: DownloadHelper.MOBILE_CHROME_UA
+                val refererUrl = intent.getStringExtra(EXTRA_REFERER_URL)
                 if (FfmpegJobTracker.get(jobId) == null) {
-                    FfmpegJobTracker.start(jobId, filename, url)
+                    FfmpegJobTracker.start(
+                        id = jobId,
+                        title = filename,
+                        sourceUrl = url,
+                        refererUrl = refererUrl,
+                        userAgent = userAgent
+                    )
                 }
-                startMux(jobId, url, filename, userAgent)
+                startMux(jobId, url, filename, userAgent, refererUrl)
             }
         }
         return START_NOT_STICKY
     }
 
-    private fun startMux(jobId: String, url: String, filename: String, userAgent: String) {
+    private fun startMux(
+        jobId: String,
+        url: String,
+        filename: String,
+        userAgent: String,
+        refererUrl: String?
+    ) {
         try {
             VideoDownloadService.ensureChannel(this)
             val notification = buildNotification(jobId, filename, 0, "เริ่ม mux…")
@@ -120,27 +134,72 @@ class FfmpegMuxService : Service() {
         val outputFile = File(workDir, filename)
         if (outputFile.exists()) outputFile.delete()
 
-        val httpHeaders = buildHttpHeaders(url, userAgent)
-        val durationMs = AtomicLong(0L)
-        runCatching {
-            // Best-effort duration for progress; mux does not wait on probe.
-            FFprobeKit.getMediaInformationAsync(url) { probeSession ->
-                val durationSec = probeSession.mediaInformation?.duration?.toDoubleOrNull() ?: 0.0
-                durationMs.set(max(0L, (durationSec * 1000.0).toLong()))
+        FfmpegJobTracker.updateProgress(jobId, 0f, "กำลังดึง playlist…")
+        prepareExecutor.execute {
+            try {
+                WebViewCookieHelper.flush()
+                val requestHeaders = CapturedMediaHeaders.mergeFor(url, refererUrl, userAgent)
+                val prepared = HlsPlaylistPreparer.prepare(
+                    mediaUrl = url,
+                    pageUrl = refererUrl,
+                    userAgent = userAgent,
+                    workDir = workDir
+                )
+                val absolutePlaylist = prepared.localPlaylist
+                    ?: throw IllegalStateException(prepared.note)
+
+                FfmpegJobTracker.updateProgress(jobId, 0.02f, "กำลังดาวน์โหลด segments…")
+                val bundle = HlsOfflineBundler.bundle(
+                    absolutePlaylist = absolutePlaylist,
+                    workDir = workDir,
+                    headers = requestHeaders
+                ) { done, total ->
+                    val fraction = if (total <= 0) 0f else done.toFloat() / total.toFloat()
+                    val progress = 0.02f + 0.75f * fraction
+                    FfmpegJobTracker.updateProgress(
+                        jobId,
+                        progress.coerceIn(0f, 0.77f),
+                        "ดาวน์โหลด segments $done/$total"
+                    )
+                    updateNotification(
+                        jobId,
+                        filename,
+                        (progress * 100).toInt().coerceIn(0, 77),
+                        "segments $done/$total"
+                    )
+                }
+                localPlaylistRef.set(bundle.localPlaylist)
+                offlineTempDirRef.set(bundle.tempDir)
+                runCatching { absolutePlaylist.delete() }
+
+                val input = bundle.localPlaylist.absolutePath
+                Log.i(TAG, "offline bundle ready: ${bundle.segmentCount} segments → $input")
+
+                val durationMs = AtomicLong(0L) // unknown; stats use time-based fallback
+                val strategies = buildOfflineMuxStrategies(
+                    input = input,
+                    outputPath = outputFile.absolutePath
+                )
+                runMuxAttempt(
+                    jobId = jobId,
+                    url = url,
+                    filename = filename,
+                    outputFile = outputFile,
+                    durationMs = durationMs,
+                    strategies = strategies,
+                    attemptIndex = 0,
+                    lastError = null
+                )
+            } catch (t: Throwable) {
+                Log.e(TAG, "playlist/segment prepare failed", t)
+                val message = t.message?.takeIf { it.isNotBlank() }
+                    ?: "เตรียม HLS ไม่สำเร็จ"
+                FfmpegJobTracker.fail(jobId, message)
+                updateNotification(jobId, filename, 0, message, ongoing = false)
+                cleanupLocalPlaylist()
+                stopSelfSafely()
             }
         }
-
-        val strategies = buildMuxStrategies(url, userAgent, httpHeaders, outputFile.absolutePath)
-        runMuxAttempt(
-            jobId = jobId,
-            url = url,
-            filename = filename,
-            outputFile = outputFile,
-            durationMs = durationMs,
-            strategies = strategies,
-            attemptIndex = 0,
-            lastError = null
-        )
     }
 
     private fun runMuxAttempt(
@@ -158,6 +217,7 @@ class FfmpegMuxService : Service() {
             FfmpegJobTracker.fail(jobId, message)
             updateNotification(jobId, filename, 0, message, ongoing = false)
             runCatching { if (outputFile.exists()) outputFile.delete() }
+            cleanupLocalPlaylist()
             stopSelfSafely()
             return
         }
@@ -204,16 +264,25 @@ class FfmpegMuxService : Service() {
                                     )
                                 }
                                 runCatching { if (outputFile.exists()) outputFile.delete() }
+                                cleanupLocalPlaylist()
                                 stopSelfSafely()
                             }
                             ReturnCode.isCancel(completed.returnCode) -> {
                                 FfmpegJobTracker.remove(jobId)
                                 runCatching { if (outputFile.exists()) outputFile.delete() }
+                                cleanupLocalPlaylist()
                                 stopSelfSafely()
                             }
                             else -> {
                                 val err = extractFfmpegError(completed)
                                 Log.w(TAG, "mux attempt ${attemptIndex + 1} failed: $err")
+                                val hint = when {
+                                    err.contains("403") || err.contains("Forbidden", true) ->
+                                        " — เซิร์ฟเวอร์ปฏิเสธ (เปิดหน้าให้วิดีโอเล่นก่อน แล้วดาวน์โหลดใหม่)"
+                                    err.contains("Invalid data", true) ->
+                                        " — ข้อมูลไม่ใช่สตรีมวิดีโอ/playlist เสีย (ลองเลือกลิงก์ .m3u8 อื่น)"
+                                    else -> ""
+                                }
                                 runMuxAttempt(
                                     jobId = jobId,
                                     url = url,
@@ -222,7 +291,7 @@ class FfmpegMuxService : Service() {
                                     durationMs = durationMs,
                                     strategies = strategies,
                                     attemptIndex = attemptIndex + 1,
-                                    lastError = "ffmpeg ล้มเหลว (rc=${completed.returnCode}): $err"
+                                    lastError = "ffmpeg ล้มเหลว (rc=${completed.returnCode}): $err$hint"
                                 )
                             }
                         }
@@ -233,6 +302,7 @@ class FfmpegMuxService : Service() {
                             "mux error: ${t.message ?: t.javaClass.simpleName}"
                         )
                         runCatching { if (outputFile.exists()) outputFile.delete() }
+                        cleanupLocalPlaylist()
                         stopSelfSafely()
                     }
                 },
@@ -340,6 +410,15 @@ class FfmpegMuxService : Service() {
         stopSelf()
     }
 
+    private fun cleanupLocalPlaylist() {
+        localPlaylistRef.getAndSet(null)?.let { file ->
+            runCatching { if (file.exists()) file.delete() }
+        }
+        offlineTempDirRef.getAndSet(null)?.let { dir ->
+            runCatching { if (dir.exists()) dir.deleteRecursively() }
+        }
+    }
+
     private data class MuxStrategy(val label: String, val args: Array<String>)
 
     companion object {
@@ -350,21 +429,35 @@ class FfmpegMuxService : Service() {
         const val EXTRA_JOB_ID = "extra_job_id"
         const val EXTRA_FILENAME = "extra_filename"
         const val EXTRA_USER_AGENT = "extra_user_agent"
+        const val EXTRA_REFERER_URL = "extra_referer_url"
         private const val NOTIFICATION_ID = 42
 
-        fun start(context: Context, url: String, userAgent: String? = null): String {
+        fun start(
+            context: Context,
+            url: String,
+            userAgent: String? = null,
+            refererUrl: String? = null
+        ): String {
             val appContext = context.applicationContext
             FfmpegJobTracker.init(appContext)
             val filename = buildFilename(url)
             val jobId = "ffmpeg-job:${UUID.randomUUID()}"
-            FfmpegJobTracker.start(jobId, filename, url)
+            val ua = userAgent ?: DownloadHelper.MOBILE_CHROME_UA
+            FfmpegJobTracker.start(
+                id = jobId,
+                title = filename,
+                sourceUrl = url,
+                refererUrl = refererUrl,
+                userAgent = ua
+            )
 
             val intent = Intent(appContext, FfmpegMuxService::class.java).apply {
                 action = ACTION_START
                 putExtra(EXTRA_URL, url)
                 putExtra(EXTRA_JOB_ID, jobId)
                 putExtra(EXTRA_FILENAME, filename)
-                putExtra(EXTRA_USER_AGENT, userAgent ?: DownloadHelper.MOBILE_CHROME_UA)
+                putExtra(EXTRA_USER_AGENT, ua)
+                putExtra(EXTRA_REFERER_URL, refererUrl)
             }
             try {
                 ContextCompat.startForegroundService(appContext, intent)
@@ -388,74 +481,42 @@ class FfmpegMuxService : Service() {
             return "${sanitized}_${System.currentTimeMillis()}.mp4"
         }
 
-        private fun buildHttpHeaders(url: String, userAgent: String): String {
-            val referer = try {
-                val uri = URI(url)
-                val host = uri.host
-                if (host.isNullOrBlank()) {
-                    null
-                } else {
-                    val scheme = uri.scheme ?: "https"
-                    "$scheme://$host/"
-                }
-            } catch (_: Exception) {
-                null
-            }
-            val cookie = runCatching { CookieManager.getInstance().getCookie(url) }
-                .getOrNull()
-                ?.takeIf { it.isNotBlank() }
-
-            val lines = buildList {
-                add("User-Agent: $userAgent")
-                if (!referer.isNullOrBlank()) add("Referer: $referer")
-                add("Accept: */*")
-                if (!cookie.isNullOrBlank()) add("Cookie: $cookie")
-            }
-            // ffmpeg -headers requires CRLF between entries and a trailing CRLF.
-            return lines.joinToString("\r\n", postfix = "\r\n")
-        }
-
-        private fun buildMuxStrategies(
-            url: String,
-            userAgent: String,
-            headers: String,
+        /**
+         * Offline-only strategies: playlist + segments are already on disk, so ffmpeg
+         * does not talk to the CDN (avoids TLS fingerprint 403).
+         */
+        private fun buildOfflineMuxStrategies(
+            input: String,
             outputPath: String
         ): List<MuxStrategy> {
-            val commonPrefix = arrayOf(
+            val common = arrayOf(
                 "-y",
-                "-user_agent", userAgent,
-                "-headers", headers,
                 "-allowed_extensions", "ALL",
-                "-protocol_whitelist", "file,http,https,tcp,tls,crypto,data,pipe",
-                "-reconnect", "1",
-                "-reconnect_streamed", "1",
-                "-reconnect_delay_max", "5",
-                "-i", url
+                "-protocol_whitelist", "file,crypto,data",
+                "-f", "hls",
+                "-i", input
             )
             return listOf(
-                // Most HLS/TS audio needs ADTS→ASC when remuxing to MP4.
                 MuxStrategy(
-                    label = "copy+aac_bsf",
-                    args = commonPrefix + arrayOf(
+                    label = "offline+copy+aac_bsf",
+                    args = common + arrayOf(
                         "-c", "copy",
                         "-bsf:a", "aac_adtstoasc",
                         "-movflags", "+faststart",
                         outputPath
                     )
                 ),
-                // Fails when there is no ADTS AAC (already fragmented MP4 / no audio).
                 MuxStrategy(
-                    label = "copy",
-                    args = commonPrefix + arrayOf(
+                    label = "offline+copy",
+                    args = common + arrayOf(
                         "-c", "copy",
                         "-movflags", "+faststart",
                         outputPath
                     )
                 ),
-                // Last resort: re-encode audio so MP4 mux can succeed.
                 MuxStrategy(
-                    label = "copyV+aac",
-                    args = commonPrefix + arrayOf(
+                    label = "offline+copyV+aac",
+                    args = common + arrayOf(
                         "-c:v", "copy",
                         "-c:a", "aac",
                         "-b:a", "128k",

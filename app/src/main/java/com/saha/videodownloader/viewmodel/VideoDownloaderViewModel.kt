@@ -5,61 +5,37 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.saha.videodownloader.download.DownloadHelper
 import com.saha.videodownloader.download.UrlHistoryStore
+import com.saha.videodownloader.download.VideoMetaProber
 import com.saha.videodownloader.model.DetectedVideoUrl
+import com.saha.videodownloader.model.VideoMetaState
 import com.saha.videodownloader.model.VideoType
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.combine
-import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
-
-enum class DetectedFilter {
-    ALL,
-    MP4,
-    HLS,
-    UNKNOWN
-}
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
+import kotlinx.coroutines.withContext
+import java.util.concurrent.ConcurrentHashMap
 
 class VideoDownloaderViewModel(application: Application) : AndroidViewModel(application) {
 
     private val historyStore = UrlHistoryStore(application)
     private val seenUrls = synchronizedSetOf<String>()
+    private val probeJobs = ConcurrentHashMap<String, Job>()
+    private val probeLimiter = Semaphore(permits = 3)
 
     private val _detectedVideos = MutableStateFlow<List<DetectedVideoUrl>>(emptyList())
     val detectedVideos: StateFlow<List<DetectedVideoUrl>> = _detectedVideos.asStateFlow()
-
-    private val _filter = MutableStateFlow(DetectedFilter.ALL)
-    val filter: StateFlow<DetectedFilter> = _filter.asStateFlow()
-
-    private val _searchQuery = MutableStateFlow("")
-    val searchQuery: StateFlow<String> = _searchQuery.asStateFlow()
-
-    val filteredVideos: StateFlow<List<DetectedVideoUrl>> =
-        combine(_detectedVideos, _filter, _searchQuery) { videos, selectedFilter, query ->
-            val byType = when (selectedFilter) {
-                DetectedFilter.ALL -> videos
-                DetectedFilter.MP4 -> videos.filter { it.type == VideoType.MP4 }
-                DetectedFilter.HLS -> videos.filter { it.type == VideoType.HLS }
-                DetectedFilter.UNKNOWN -> videos.filter { it.type == VideoType.UNKNOWN }
-            }
-            val needle = query.trim()
-            if (needle.isEmpty()) {
-                byType
-            } else {
-                byType.filter { it.url.contains(needle, ignoreCase = true) }
-            }
-        }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
     private val _isPageLoading = MutableStateFlow(false)
     val isPageLoading: StateFlow<Boolean> = _isPageLoading.asStateFlow()
 
     private val _isDownloading = MutableStateFlow(false)
     val isDownloading: StateFlow<Boolean> = _isDownloading.asStateFlow()
-
-    private val _selectedUrl = MutableStateFlow<String?>(null)
-    val selectedUrl: StateFlow<String?> = _selectedUrl.asStateFlow()
 
     private val _pendingNavigateUrl = MutableStateFlow<String?>(null)
     val pendingNavigateUrl: StateFlow<String?> = _pendingNavigateUrl.asStateFlow()
@@ -72,6 +48,15 @@ class VideoDownloaderViewModel(application: Application) : AndroidViewModel(appl
 
     private val _reloadToken = MutableStateFlow(0)
     val reloadToken: StateFlow<Int> = _reloadToken.asStateFlow()
+
+    /** Last non-blank page URL loaded in the WebView — used as Referer for CDN auth. */
+    private val _currentPageUrl = MutableStateFlow<String?>(null)
+    val currentPageUrl: StateFlow<String?> = _currentPageUrl.asStateFlow()
+
+    fun setCurrentPageUrl(url: String?) {
+        if (url.isNullOrBlank() || url == "about:blank") return
+        _currentPageUrl.value = url
+    }
 
     /**
      * Called from [com.saha.videodownloader.webview.VideoInterceptingWebViewClient]
@@ -88,54 +73,20 @@ class VideoDownloaderViewModel(application: Application) : AndroidViewModel(appl
             current + DetectedVideoUrl(
                 url = url,
                 type = type,
-                detectedAt = System.currentTimeMillis()
+                detectedAt = System.currentTimeMillis(),
+                metaState = VideoMetaState.PENDING
             )
         }
+        enqueueMetaProbe(url, type)
     }
 
     fun clearDetectedUrls() {
+        probeJobs.values.forEach { it.cancel() }
+        probeJobs.clear()
         synchronized(seenUrls) {
             seenUrls.clear()
         }
         _detectedVideos.value = emptyList()
-        _selectedUrl.value = null
-    }
-
-    fun setFilter(filter: DetectedFilter) {
-        _filter.value = filter
-        clearSelectionIfHidden()
-    }
-
-    fun setSearchQuery(query: String) {
-        _searchQuery.value = query
-        clearSelectionIfHidden()
-    }
-
-    private fun clearSelectionIfHidden() {
-        val selected = _selectedUrl.value ?: return
-        if (filteredVideos.value.none { it.url == selected }) {
-            // Fall back to type/query check against source list for immediate UI.
-            val item = _detectedVideos.value.firstOrNull { it.url == selected } ?: run {
-                _selectedUrl.value = null
-                return
-            }
-            val filter = _filter.value
-            val typeOk = when (filter) {
-                DetectedFilter.ALL -> true
-                DetectedFilter.MP4 -> item.type == VideoType.MP4
-                DetectedFilter.HLS -> item.type == VideoType.HLS
-                DetectedFilter.UNKNOWN -> item.type == VideoType.UNKNOWN
-            }
-            val query = _searchQuery.value.trim()
-            val queryOk = query.isEmpty() || item.url.contains(query, ignoreCase = true)
-            if (!typeOk || !queryOk) {
-                _selectedUrl.value = null
-            }
-        }
-    }
-
-    fun selectUrl(url: String?) {
-        _selectedUrl.value = url
     }
 
     fun setPageLoading(loading: Boolean) {
@@ -177,6 +128,53 @@ class VideoDownloaderViewModel(application: Application) : AndroidViewModel(appl
 
     fun currentUserAgent(): String =
         if (_useDesktopUa.value) DownloadHelper.DESKTOP_CHROME_UA else DownloadHelper.MOBILE_CHROME_UA
+
+    private fun enqueueMetaProbe(url: String, type: VideoType) {
+        probeJobs[url]?.cancel()
+        val job = viewModelScope.launch {
+            updateVideo(url) { it.copy(metaState = VideoMetaState.LOADING) }
+            val meta = try {
+                probeLimiter.withPermit {
+                    withContext(Dispatchers.IO) {
+                        VideoMetaProber.probe(
+                            url = url,
+                            type = type,
+                            pageUrl = _currentPageUrl.value,
+                            userAgent = currentUserAgent()
+                        )
+                    }
+                }
+            } catch (_: Throwable) {
+                null
+            }
+
+            // Drop result if the list was cleared / item removed.
+            if (_detectedVideos.value.none { it.url == url }) return@launch
+
+            if (meta == null || (meta.contentLengthBytes == null && meta.durationMs == null)) {
+                updateVideo(url) {
+                    it.copy(metaState = VideoMetaState.UNAVAILABLE)
+                }
+            } else {
+                updateVideo(url) {
+                    it.copy(
+                        contentLengthBytes = meta.contentLengthBytes,
+                        durationMs = meta.durationMs,
+                        sizeIsEstimate = meta.sizeIsEstimate,
+                        metaState = VideoMetaState.READY
+                    )
+                }
+            }
+        }
+        probeJobs[url] = job
+        job.invokeOnCompletion { probeJobs.remove(url, job) }
+    }
+
+    private fun updateVideo(url: String, transform: (DetectedVideoUrl) -> DetectedVideoUrl) {
+        _detectedVideos.update { list ->
+            list.map { if (it.url == url) transform(it) else it }
+        }
+    }
 
     private fun <T> synchronizedSetOf(): MutableSet<T> =
         java.util.Collections.synchronizedSet(mutableSetOf())

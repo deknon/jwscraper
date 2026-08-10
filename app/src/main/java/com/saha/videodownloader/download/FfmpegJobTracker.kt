@@ -28,6 +28,8 @@ object FfmpegJobTracker {
         val progressPercent: Float,
         val sessionId: Long? = null,
         val message: String? = null,
+        val refererUrl: String? = null,
+        val userAgent: String? = null,
         val updatedAtMs: Long = System.currentTimeMillis()
     )
 
@@ -48,14 +50,22 @@ object FfmpegJobTracker {
         }
     }
 
-    fun start(id: String, title: String, sourceUrl: String) {
+    fun start(
+        id: String,
+        title: String,
+        sourceUrl: String,
+        refererUrl: String? = null,
+        userAgent: String? = null
+    ) {
         jobs[id] = Job(
             id = id,
             title = title,
             sourceUrl = sourceUrl,
             state = LibraryDownload.State.DOWNLOADING,
             progressPercent = 0f,
-            message = "เริ่ม mux…"
+            message = "เริ่ม mux…",
+            refererUrl = refererUrl,
+            userAgent = userAgent
         )
         publish()
     }
@@ -139,6 +149,8 @@ object FfmpegJobTracker {
                     .put("state", job.state.name)
                     .put("progressPercent", job.progressPercent.toDouble())
                     .put("message", job.message)
+                    .put("refererUrl", job.refererUrl)
+                    .put("userAgent", job.userAgent)
                     .put("updatedAtMs", job.updatedAtMs)
             )
         }
@@ -166,6 +178,16 @@ object FfmpegJobTracker {
                         null
                     } else {
                         obj.optString("message").takeIf { it.isNotBlank() }
+                    },
+                    refererUrl = if (obj.isNull("refererUrl")) {
+                        null
+                    } else {
+                        obj.optString("refererUrl").takeIf { it.isNotBlank() }
+                    },
+                    userAgent = if (obj.isNull("userAgent")) {
+                        null
+                    } else {
+                        obj.optString("userAgent").takeIf { it.isNotBlank() }
                     },
                     updatedAtMs = obj.optLong("updatedAtMs", System.currentTimeMillis())
                 )

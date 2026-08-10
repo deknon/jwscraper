@@ -2,8 +2,6 @@ package com.saha.videodownloader.ui
 
 import android.annotation.SuppressLint
 import android.app.Activity
-import android.content.ClipData
-import android.content.ClipboardManager
 import android.content.Context
 import android.content.ContextWrapper
 import android.graphics.Bitmap
@@ -19,22 +17,21 @@ import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
@@ -48,14 +45,8 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.FilterChip
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.OutlinedTextFieldDefaults
-import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
@@ -68,17 +59,20 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
+import kotlinx.coroutines.launch
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -86,10 +80,11 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.saha.videodownloader.download.DownloadHelper
 import com.saha.videodownloader.download.FfmpegJobTracker
+import com.saha.videodownloader.download.WebViewCookieHelper
 import com.saha.videodownloader.model.DetectedVideoUrl
 import com.saha.videodownloader.model.LibraryDownload
+import com.saha.videodownloader.model.VideoMetaState
 import com.saha.videodownloader.model.VideoType
-import com.saha.videodownloader.viewmodel.DetectedFilter
 import com.saha.videodownloader.viewmodel.VideoDownloaderViewModel
 import com.saha.videodownloader.webview.VideoInterceptingWebViewClient
 
@@ -103,16 +98,12 @@ fun MainScreen(
 ) {
     val context = LocalContext.current
     val detectedVideos by viewModel.detectedVideos.collectAsStateWithLifecycle()
-    val filteredVideos by viewModel.filteredVideos.collectAsStateWithLifecycle()
-    val filter by viewModel.filter.collectAsStateWithLifecycle()
     val isPageLoading by viewModel.isPageLoading.collectAsStateWithLifecycle()
     val isDownloading by viewModel.isDownloading.collectAsStateWithLifecycle()
-    val selectedUrl by viewModel.selectedUrl.collectAsStateWithLifecycle()
     val pendingNavigateUrl by viewModel.pendingNavigateUrl.collectAsStateWithLifecycle()
     val recentUrls by viewModel.recentUrls.collectAsStateWithLifecycle()
     val useDesktopUa by viewModel.useDesktopUa.collectAsStateWithLifecycle()
     val reloadToken by viewModel.reloadToken.collectAsStateWithLifecycle()
-    val searchQuery by viewModel.searchQuery.collectAsStateWithLifecycle()
     val ffmpegJobs by FfmpegJobTracker.snapshot.collectAsStateWithLifecycle()
 
     var urlInput by remember { mutableStateOf(initialUrl?.takeIf { it.isNotBlank() } ?: "https://") }
@@ -123,6 +114,7 @@ fun MainScreen(
     var listExpanded by remember { mutableStateOf(false) }
     var menuExpanded by remember { mutableStateOf(false) }
     val snackbarHostState = remember { SnackbarHostState() }
+    val scope = rememberCoroutineScope()
 
     val keepScreenOn = isDownloading || ffmpegJobs.any {
         it.state == LibraryDownload.State.DOWNLOADING || it.state == LibraryDownload.State.QUEUED
@@ -180,17 +172,13 @@ fun MainScreen(
         }
     }
 
+    // Put chrome in Scaffold topBar/bottomBar so WebView cannot paint over them.
+    // Custom bars must pad status/navigation bars themselves under enableEdgeToEdge().
     Scaffold(
         modifier = modifier.fillMaxSize(),
-        snackbarHost = { SnackbarHost(snackbarHostState) }
-    ) { padding ->
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(padding)
-        ) {
+        contentWindowInsets = WindowInsets(0, 0, 0, 0),
+        topBar = {
             CompactTopChrome(
-                title = "saha Video Downloader",
                 detectedCount = detectedVideos.size,
                 urlInput = urlInput,
                 onUrlChange = { urlInput = it },
@@ -229,20 +217,86 @@ fun MainScreen(
                     viewModel.clearDetectedUrls()
                     Toast.makeText(context, "ล้างคุกกี้/แคชแล้ว", Toast.LENGTH_SHORT).show()
                     viewModel.reloadPage()
+                },
+                onClearDetected = {
+                    menuExpanded = false
+                    viewModel.clearDetectedUrls()
                 }
             )
-
-            if (isPageLoading || isDownloading) {
-                LinearProgressIndicator(
-                    modifier = Modifier.fillMaxWidth(),
-                    color = if (isDownloading) {
-                        MaterialTheme.colorScheme.tertiary
-                    } else {
-                        MaterialTheme.colorScheme.primary
-                    }
+        },
+        bottomBar = {
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                color = MaterialTheme.colorScheme.surface,
+                tonalElevation = 2.dp,
+                shadowElevation = 4.dp
+            ) {
+                DetectedListSection(
+                    videos = detectedVideos,
+                    expanded = listExpanded,
+                    onExpandedChange = { listExpanded = it },
+                    onDownloadItem = { item ->
+                        // Stay on the WebView — never navigate to the downloads library.
+                        listExpanded = false
+                        when (item.type) {
+                            VideoType.MP4 -> {
+                                viewModel.setDownloading(true)
+                                DownloadHelper.downloadMp4(context, item.url)
+                                viewModel.setDownloading(false)
+                                scope.launch {
+                                    snackbarHostState.showSnackbar(
+                                        "เริ่มดาวน์โหลดแล้ว — อยู่หน้าเว็บต่อได้"
+                                    )
+                                }
+                            }
+                            VideoType.HLS -> DownloadHelper.handleHlsUrl(
+                                context = context,
+                                url = item.url,
+                                onDownloadStarted = {
+                                    viewModel.setDownloading(true)
+                                    listExpanded = false
+                                },
+                                onDownloadFinished = {
+                                    viewModel.setDownloading(false)
+                                    scope.launch {
+                                        snackbarHostState.showSnackbar(
+                                            "เริ่มดาวน์โหลดแล้ว — อยู่หน้าเว็บต่อได้"
+                                        )
+                                    }
+                                },
+                                userAgent = viewModel.currentUserAgent(),
+                                refererUrl = viewModel.currentPageUrl.value
+                                    ?: urlInput.takeIf {
+                                        it.startsWith("http://") || it.startsWith("https://")
+                                    }
+                            )
+                            VideoType.UNKNOWN -> {
+                                viewModel.setDownloading(true)
+                                DownloadHelper.handleUnknownOrOther(context, item.url)
+                                viewModel.setDownloading(false)
+                                scope.launch {
+                                    snackbarHostState.showSnackbar(
+                                        "เริ่มดาวน์โหลดแล้ว — อยู่หน้าเว็บต่อได้"
+                                    )
+                                }
+                            }
+                        }
+                    },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .navigationBarsPadding()
                 )
             }
-
+        },
+        snackbarHost = { SnackbarHost(snackbarHostState) }
+    ) { padding ->
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(padding)
+                .clipToBounds()
+                .background(MaterialTheme.colorScheme.background)
+        ) {
             VideoWebView(
                 loadUrl = webViewLoadUrl,
                 userAgent = viewModel.currentUserAgent(),
@@ -253,75 +307,56 @@ fun MainScreen(
                 onUrlChanged = { current ->
                     if (!current.isNullOrBlank() && current != "about:blank") {
                         urlInput = current
+                        viewModel.setCurrentPageUrl(current)
                     }
                 },
                 modifier = Modifier
-                    .fillMaxWidth()
-                    .weight(1f)
+                    .fillMaxSize()
+                    .clipToBounds()
             )
 
-            if (showHistory) {
-                HistoryDialog(
-                    urls = recentUrls,
-                    onSelect = { selected ->
-                        showHistory = false
-                        urlInput = selected
-                        viewModel.clearDetectedUrls()
-                        viewModel.rememberUrl(selected)
-                        webViewLoadUrl = selected
-                    },
-                    onClear = {
-                        viewModel.clearHistory()
-                    },
-                    onDismiss = { showHistory = false }
+            if (webViewLoadUrl.isNullOrBlank() &&
+                (webViewRef?.url.isNullOrBlank() || webViewRef?.url == "about:blank")
+            ) {
+                Text(
+                    text = "พิมพ์ URL ด้านบน แล้วกด ไป",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    style = MaterialTheme.typography.bodyLarge,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier
+                        .align(Alignment.Center)
+                        .padding(24.dp)
                 )
             }
 
-            HorizontalDivider()
-
-            DetectedListSection(
-                videos = filteredVideos,
-                totalCount = detectedVideos.size,
-                expanded = listExpanded,
-                onExpandedChange = { listExpanded = it },
-                filter = filter,
-                onFilterChange = { viewModel.setFilter(it) },
-                searchQuery = searchQuery,
-                onSearchQueryChange = { viewModel.setSearchQuery(it) },
-                selectedUrl = selectedUrl,
-                onSelect = { viewModel.selectUrl(it) },
-                onCopy = { url ->
-                    val clipboard =
-                        context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                    clipboard.setPrimaryClip(ClipData.newPlainText("video-url", url))
-                    Toast.makeText(context, "คัดลอก URL แล้ว", Toast.LENGTH_SHORT).show()
-                },
-                onDownload = {
-                    val selected = detectedVideos.firstOrNull { it.url == selectedUrl }
-                    if (selected != null) {
-                        when (selected.type) {
-                            VideoType.MP4 -> {
-                                viewModel.setDownloading(true)
-                                DownloadHelper.downloadMp4(context, selected.url)
-                                viewModel.setDownloading(false)
-                            }
-                            VideoType.HLS -> DownloadHelper.handleHlsUrl(
-                                context = context,
-                                url = selected.url,
-                                onDownloadStarted = { viewModel.setDownloading(true) },
-                                onDownloadFinished = { viewModel.setDownloading(false) },
-                                userAgent = viewModel.currentUserAgent()
-                            )
-                            VideoType.UNKNOWN -> {
-                                viewModel.setDownloading(true)
-                                DownloadHelper.handleUnknownOrOther(context, selected.url)
-                                viewModel.setDownloading(false)
-                            }
-                        }
+            if (isPageLoading || isDownloading) {
+                LinearProgressIndicator(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .align(Alignment.TopCenter),
+                    color = if (isDownloading) {
+                        MaterialTheme.colorScheme.tertiary
+                    } else {
+                        MaterialTheme.colorScheme.primary
                     }
+                )
+            }
+        }
+
+        if (showHistory) {
+            HistoryDialog(
+                urls = recentUrls,
+                onSelect = { selected ->
+                    showHistory = false
+                    urlInput = selected
+                    viewModel.clearDetectedUrls()
+                    viewModel.rememberUrl(selected)
+                    webViewLoadUrl = selected
                 },
-                onClear = { viewModel.clearDetectedUrls() },
-                modifier = Modifier.fillMaxWidth()
+                onClear = {
+                    viewModel.clearHistory()
+                },
+                onDismiss = { showHistory = false }
             )
         }
     }
@@ -329,7 +364,6 @@ fun MainScreen(
 
 @Composable
 private fun CompactTopChrome(
-    title: String,
     detectedCount: Int,
     urlInput: String,
     onUrlChange: (String) -> Unit,
@@ -344,116 +378,115 @@ private fun CompactTopChrome(
     onHistory: () -> Unit,
     onReload: () -> Unit,
     onClearSiteData: () -> Unit,
+    onClearDetected: () -> Unit,
     modifier: Modifier = Modifier
 ) {
+    // Surface draws behind the status bar; row content is padded below it.
     Surface(
         modifier = modifier.fillMaxWidth(),
         color = MaterialTheme.colorScheme.primaryContainer,
-        tonalElevation = 2.dp
+        tonalElevation = 3.dp,
+        shadowElevation = 2.dp
     ) {
-        Column(
+        Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 8.dp, vertical = 4.dp)
+                .statusBarsPadding()
+                .heightIn(min = 48.dp)
+                .padding(horizontal = 4.dp, vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(2.dp)
         ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically
+            TextButton(
+                onClick = onBack,
+                enabled = canGoBack,
+                modifier = Modifier.size(width = 36.dp, height = 36.dp),
+                contentPadding = ButtonDefaults.TextButtonContentPadding
             ) {
-                BadgedBox(
-                    badge = {
-                        if (detectedCount > 0) {
-                            Badge { Text("$detectedCount") }
-                        }
+                Text("←", fontSize = 18.sp, color = MaterialTheme.colorScheme.onPrimaryContainer)
+            }
+
+            CompactUrlField(
+                value = urlInput,
+                onValueChange = onUrlChange,
+                onGo = onGo,
+                modifier = Modifier
+                    .weight(1f)
+                    .height(36.dp)
+            )
+
+            Button(
+                onClick = onGo,
+                modifier = Modifier.height(36.dp),
+                contentPadding = ButtonDefaults.ContentPadding
+            ) {
+                Text("ไป", fontSize = 13.sp)
+            }
+
+            BadgedBox(
+                badge = {
+                    if (detectedCount > 0) {
+                        Badge { Text("$detectedCount") }
                     }
-                ) {
-                    Text(
-                        text = title,
-                        style = MaterialTheme.typography.labelLarge,
-                        fontWeight = FontWeight.SemiBold,
-                        color = MaterialTheme.colorScheme.onPrimaryContainer,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
                 }
-                Spacer(modifier = Modifier.weight(1f))
+            ) {
                 TextButton(
                     onClick = onOpenDownloads,
                     contentPadding = ButtonDefaults.TextButtonContentPadding
                 ) {
-                    Text("ดาวน์โหลด", fontSize = 13.sp)
+                    Text(
+                        "รายการ",
+                        fontSize = 12.sp,
+                        maxLines = 1,
+                        color = MaterialTheme.colorScheme.onPrimaryContainer
+                    )
                 }
             }
 
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(bottom = 4.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(4.dp)
+            TextButton(
+                onClick = { onMenuExpandedChange(true) },
+                modifier = Modifier.size(width = 36.dp, height = 36.dp),
+                contentPadding = ButtonDefaults.TextButtonContentPadding
             ) {
-                TextButton(
-                    onClick = onBack,
-                    enabled = canGoBack,
-                    modifier = Modifier.size(width = 40.dp, height = 36.dp),
-                    contentPadding = ButtonDefaults.TextButtonContentPadding
-                ) {
-                    Text("←", fontSize = 18.sp)
-                }
+                Text("⋮", fontSize = 20.sp, color = MaterialTheme.colorScheme.onPrimaryContainer)
+            }
 
-                CompactUrlField(
-                    value = urlInput,
-                    onValueChange = onUrlChange,
-                    onGo = onGo,
-                    modifier = Modifier
-                        .weight(1f)
-                        .height(36.dp)
+            DropdownMenu(
+                expanded = menuExpanded,
+                onDismissRequest = { onMenuExpandedChange(false) }
+            ) {
+                DropdownMenuItem(
+                    text = { Text("saha Video Downloader", fontWeight = FontWeight.SemiBold) },
+                    onClick = { onMenuExpandedChange(false) },
+                    enabled = false
                 )
-
-                Button(
-                    onClick = onGo,
-                    modifier = Modifier.height(36.dp),
-                    contentPadding = ButtonDefaults.ContentPadding
-                ) {
-                    Text("ไป", fontSize = 13.sp)
-                }
-
-                TextButton(
-                    onClick = { onMenuExpandedChange(true) },
-                    modifier = Modifier.size(width = 40.dp, height = 36.dp),
-                    contentPadding = ButtonDefaults.TextButtonContentPadding
-                ) {
-                    Text("⋮", fontSize = 20.sp)
-                }
-
-                DropdownMenu(
-                    expanded = menuExpanded,
-                    onDismissRequest = { onMenuExpandedChange(false) }
-                ) {
-                    DropdownMenuItem(
-                        text = { Text("ประวัติ URL") },
-                        onClick = onHistory
-                    )
-                    DropdownMenuItem(
-                        text = { Text("รีเฟรช") },
-                        onClick = onReload
-                    )
-                    DropdownMenuItem(
-                        text = {
-                            Text(
-                                if (useDesktopUa) "ใช้ Mobile site" else "ใช้ Desktop site"
-                            )
-                        },
-                        onClick = {
-                            onMenuExpandedChange(false)
-                            onToggleDesktopUa()
-                        }
-                    )
-                    DropdownMenuItem(
-                        text = { Text("ล้างข้อมูลไซต์") },
-                        onClick = onClearSiteData
-                    )
-                }
+                DropdownMenuItem(
+                    text = { Text("ประวัติ URL") },
+                    onClick = onHistory
+                )
+                DropdownMenuItem(
+                    text = { Text("รีเฟรช") },
+                    onClick = onReload
+                )
+                DropdownMenuItem(
+                    text = {
+                        Text(
+                            if (useDesktopUa) "ใช้ Mobile site" else "ใช้ Desktop site"
+                        )
+                    },
+                    onClick = {
+                        onMenuExpandedChange(false)
+                        onToggleDesktopUa()
+                    }
+                )
+                DropdownMenuItem(
+                    text = { Text("ล้างข้อมูลไซต์") },
+                    onClick = onClearSiteData
+                )
+                DropdownMenuItem(
+                    text = { Text("ล้างรายการวิดีโอ") },
+                    onClick = onClearDetected
+                )
             }
         }
     }
@@ -557,13 +590,15 @@ private fun VideoWebView(
     var appliedReloadToken by remember { mutableStateOf(reloadToken) }
 
     AndroidView(
-        modifier = modifier,
+        modifier = modifier.clipToBounds(),
         factory = { context ->
             WebView(context).apply {
                 layoutParams = ViewGroup.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT,
                     ViewGroup.LayoutParams.MATCH_PARENT
                 )
+                // Prevent WebView from drawing outside its Compose slot on HyperOS.
+                setBackgroundColor(android.graphics.Color.WHITE)
                 settings.javaScriptEnabled = true
                 settings.domStorageEnabled = true
                 settings.mediaPlaybackRequiresUserGesture = false
@@ -572,6 +607,8 @@ private fun VideoWebView(
                 settings.cacheMode = WebSettings.LOAD_DEFAULT
                 settings.loadWithOverviewMode = true
                 settings.useWideViewPort = true
+                // CDN / JW Player auth cookies are often third-party.
+                WebViewCookieHelper.enableFor(this)
 
                 webViewClient = object : VideoInterceptingWebViewClient(
                     onVideoUrlDetected = { url, type ->
@@ -587,6 +624,7 @@ private fun VideoWebView(
 
                     override fun onPageFinished(view: WebView?, url: String?) {
                         super.onPageFinished(view, url)
+                        WebViewCookieHelper.flush()
                         latestViewModel.setPageLoading(false)
                         latestUrlChanged(url)
                         latestCanGoBack(view?.canGoBack() == true)
@@ -621,31 +659,23 @@ private fun VideoWebView(
 @Composable
 private fun DetectedListSection(
     videos: List<DetectedVideoUrl>,
-    totalCount: Int,
     expanded: Boolean,
     onExpandedChange: (Boolean) -> Unit,
-    filter: DetectedFilter,
-    onFilterChange: (DetectedFilter) -> Unit,
-    searchQuery: String,
-    onSearchQueryChange: (String) -> Unit,
-    selectedUrl: String?,
-    onSelect: (String) -> Unit,
-    onCopy: (String) -> Unit,
-    onDownload: () -> Unit,
-    onClear: () -> Unit,
+    onDownloadItem: (DetectedVideoUrl) -> Unit,
     modifier: Modifier = Modifier
 ) {
     Column(
         modifier = modifier
             .background(MaterialTheme.colorScheme.surface)
-            .padding(horizontal = 8.dp, vertical = 4.dp)
+            .padding(horizontal = 8.dp, vertical = 2.dp)
     ) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
+                .heightIn(min = 40.dp)
                 .clip(RoundedCornerShape(8.dp))
                 .clickable { onExpandedChange(!expanded) }
-                .padding(horizontal = 4.dp, vertical = 2.dp),
+                .padding(horizontal = 4.dp, vertical = 0.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             Text(
@@ -654,25 +684,17 @@ private fun DetectedListSection(
                 fontSize = 14.sp
             )
             Text(
-                text = "วิดีโอ (${videos.size}/$totalCount)",
+                text = "วิดีโอ (${videos.size})",
                 style = MaterialTheme.typography.labelLarge,
                 fontWeight = FontWeight.SemiBold,
                 modifier = Modifier.weight(1f)
             )
-            TextButton(
-                onClick = onClear,
-                enabled = totalCount > 0,
-                contentPadding = ButtonDefaults.TextButtonContentPadding
-            ) {
-                Text("ล้าง", fontSize = 13.sp)
-            }
-            Button(
-                onClick = onDownload,
-                enabled = selectedUrl != null,
-                modifier = Modifier.height(32.dp),
-                contentPadding = ButtonDefaults.ContentPadding
-            ) {
-                Text("ดาวน์โหลด", fontSize = 13.sp)
+            if (videos.isNotEmpty() && !expanded) {
+                Text(
+                    text = "แตะเพื่อดาวน์โหลด",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
             }
         }
 
@@ -680,52 +702,11 @@ private fun DetectedListSection(
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .heightIn(max = 168.dp)
+                    .heightIn(max = 200.dp)
             ) {
-                OutlinedTextField(
-                    value = searchQuery,
-                    onValueChange = onSearchQueryChange,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(48.dp),
-                    singleLine = true,
-                    placeholder = { Text("ค้นหาในรายการ", fontSize = 13.sp) },
-                    textStyle = TextStyle(fontSize = 13.sp),
-                    colors = OutlinedTextFieldDefaults.colors()
-                )
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .horizontalScroll(rememberScrollState())
-                        .padding(vertical = 2.dp),
-                    horizontalArrangement = Arrangement.spacedBy(6.dp)
-                ) {
-                    DetectedFilter.entries.forEach { option ->
-                        FilterChip(
-                            selected = filter == option,
-                            onClick = { onFilterChange(option) },
-                            label = {
-                                Text(
-                                    text = when (option) {
-                                        DetectedFilter.ALL -> "ทั้งหมด"
-                                        DetectedFilter.MP4 -> "MP4"
-                                        DetectedFilter.HLS -> "HLS"
-                                        DetectedFilter.UNKNOWN -> "อื่นๆ"
-                                    },
-                                    fontSize = 12.sp
-                                )
-                            }
-                        )
-                    }
-                }
-
                 if (videos.isEmpty()) {
                     Text(
-                        text = if (totalCount == 0) {
-                            "ยังไม่พบวิดีโอ — เปิดหน้าเว็บแล้วรอ"
-                        } else {
-                            "ไม่มีรายการในตัวกรอง/คำค้นหานี้"
-                        },
+                        text = "ยังไม่พบวิดีโอ — เปิดหน้าเว็บแล้วรอ",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.padding(vertical = 4.dp)
@@ -734,15 +715,13 @@ private fun DetectedListSection(
                     LazyColumn(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .heightIn(max = 96.dp),
+                            .heightIn(max = 188.dp),
                         verticalArrangement = Arrangement.spacedBy(2.dp)
                     ) {
                         items(videos, key = { it.url }) { item ->
                             DetectedVideoRow(
                                 item = item,
-                                selected = item.url == selectedUrl,
-                                onSelect = { onSelect(item.url) },
-                                onCopy = { onCopy(item.url) }
+                                onClick = { onDownloadItem(item) }
                             )
                         }
                     }
@@ -755,22 +734,15 @@ private fun DetectedListSection(
 @Composable
 private fun DetectedVideoRow(
     item: DetectedVideoUrl,
-    selected: Boolean,
-    onSelect: () -> Unit,
-    onCopy: () -> Unit
+    onClick: () -> Unit
 ) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .selectable(
-                selected = selected,
-                onClick = onSelect,
-                role = Role.RadioButton
-            )
-            .padding(vertical = 4.dp),
+            .clickable(onClick = onClick)
+            .padding(vertical = 6.dp, horizontal = 4.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        RadioButton(selected = selected, onClick = onSelect)
         Column(modifier = Modifier.weight(1f)) {
             Text(
                 text = item.url,
@@ -778,11 +750,62 @@ private fun DetectedVideoRow(
                 overflow = TextOverflow.Ellipsis,
                 style = MaterialTheme.typography.bodySmall
             )
-        }
-        TextButton(onClick = onCopy) {
-            Text("คัดลอก")
+            val metaLine = formatVideoMeta(item)
+            if (metaLine != null) {
+                Text(
+                    text = metaLine,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
         }
         TypeBadge(type = item.type)
+    }
+}
+
+private fun formatVideoMeta(item: DetectedVideoUrl): String? {
+    return when (item.metaState) {
+        VideoMetaState.PENDING, VideoMetaState.LOADING -> "กำลังอ่านขนาด…"
+        VideoMetaState.UNAVAILABLE -> "ขนาด/ความยาวไม่ทราบ"
+        VideoMetaState.READY -> {
+            val parts = buildList {
+                formatDuration(item.durationMs)?.let { add(it) }
+                formatBytes(item.contentLengthBytes, item.sizeIsEstimate)?.let { add(it) }
+            }
+            parts.joinToString(" · ").ifBlank { "ขนาด/ความยาวไม่ทราบ" }
+        }
+    }
+}
+
+private fun formatBytes(bytes: Long?, estimate: Boolean): String? {
+    if (bytes == null || bytes <= 0L) return null
+    val units = arrayOf("B", "KB", "MB", "GB", "TB")
+    var value = bytes.toDouble()
+    var unit = 0
+    while (value >= 1024.0 && unit < units.lastIndex) {
+        value /= 1024.0
+        unit++
+    }
+    val text = if (unit == 0) {
+        "${bytes.toInt()} ${units[unit]}"
+    } else {
+        String.format("%.1f %s", value, units[unit])
+    }
+    return if (estimate) "~$text" else text
+}
+
+private fun formatDuration(durationMs: Long?): String? {
+    if (durationMs == null || durationMs <= 0L) return null
+    val totalSec = (durationMs + 500L) / 1000L
+    val hours = totalSec / 3600L
+    val minutes = (totalSec % 3600L) / 60L
+    val seconds = totalSec % 60L
+    return if (hours > 0L) {
+        String.format("%d:%02d:%02d", hours, minutes, seconds)
+    } else {
+        String.format("%d:%02d", minutes, seconds)
     }
 }
 

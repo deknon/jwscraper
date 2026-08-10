@@ -87,9 +87,15 @@ class OfflineDownloadRepository(context: Context) {
 
     /** Remove a failed in-memory/persisted job and start a fresh mux for the same URL. */
     fun retryFfmpegJob(id: String, sourceUrl: String) {
+        val previous = FfmpegJobTracker.get(id)
         FfmpegJobTracker.remove(id)
         if (sourceUrl.isNotBlank()) {
-            FfmpegMuxService.start(appContext, sourceUrl)
+            FfmpegMuxService.start(
+                context = appContext,
+                url = sourceUrl,
+                userAgent = previous?.userAgent,
+                refererUrl = previous?.refererUrl
+            )
         }
     }
 
