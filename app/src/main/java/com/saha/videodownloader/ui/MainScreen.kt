@@ -309,7 +309,8 @@ fun MainScreen(
                                 context = context,
                                 url = selected.url,
                                 onDownloadStarted = { viewModel.setDownloading(true) },
-                                onDownloadFinished = { viewModel.setDownloading(false) }
+                                onDownloadFinished = { viewModel.setDownloading(false) },
+                                userAgent = viewModel.currentUserAgent()
                             )
                             VideoType.UNKNOWN -> {
                                 viewModel.setDownloading(true)

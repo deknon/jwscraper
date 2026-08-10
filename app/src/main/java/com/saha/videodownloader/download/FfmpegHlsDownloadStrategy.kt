@@ -11,7 +11,8 @@ import android.widget.Toast
  */
 class FfmpegHlsDownloadStrategy(
     private val onStarted: (() -> Unit)? = null,
-    private val onFinished: (() -> Unit)? = null
+    private val onFinished: (() -> Unit)? = null,
+    private val userAgent: String? = null
 ) : HlsDownloadStrategy {
 
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -19,7 +20,7 @@ class FfmpegHlsDownloadStrategy(
     override fun download(url: String, context: Context) {
         onStarted?.let { mainHandler.post(it) }
         // Registers job in downloads list before FGS starts.
-        FfmpegMuxService.start(context, url)
+        FfmpegMuxService.start(context, url, userAgent)
         mainHandler.post {
             Toast.makeText(
                 context.applicationContext,
