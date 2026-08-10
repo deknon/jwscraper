@@ -11,12 +11,13 @@
 5. กดปุ่ม **ดาวน์โหลด**
    - **MP4** → ดาวน์โหลดผ่าน `DownloadManager` ไปยังโฟลเดอร์ Downloads
    - **HLS** → เลือกโหมด:
-     1. **Mux เป็น MP4 (ffmpeg)** — รวม segment เป็นไฟล์ `.mp4` ใน Downloads
+     1. **Mux เป็น MP4 (ffmpeg)** — รวม segment เป็นไฟล์ `.mp4` ใน Downloads (foreground service + progress)
      2. **Media3 offline cache** — แคชสำหรับเล่นออฟไลน์ในแอป (ExoPlayer)
    - **UNKNOWN** → พยายามดาวน์โหลดแบบ progressive ผ่าน `DownloadManager`
 6. กด **ดาวน์โหลด** มุมขวาบนเพื่อเปิดหน้า library:
    - Media3 → ปุ่ม **เล่น** (ExoPlayer อ่านจาก offline cache)
-   - ffmpeg MP4 → ปุ่ม **เปิด** / **แชร์**
+   - ffmpeg ที่กำลัง mux → แถบ progress + **ยกเลิก**
+   - ffmpeg MP4 เสร็จแล้ว → ปุ่ม **เปิด** / **แชร์**
    - ลบรายการได้ทั้งสองโหมด
 
 ปุ่ม **ล้างรายการ** ล้าง URL ที่ตรวจพบทั้งหมด (ไม่ลบไฟล์ที่ดาวน์โหลดแล้ว)
@@ -27,6 +28,18 @@
 2. **URL แบบ signed/token อาจหมดอายุเร็ว** — ถ้าลิงก์หมดอายุก่อนกดดาวน์โหลด ให้โหลดหน้าเว็บใหม่แล้วเลือก URL ล่าสุดจากรายการ
 3. **HLS ที่มี encryption / DRM หรือ codec ที่ ffmpeg remux ไม่รองรับ** อาจล้มเหลว — ลองโหมด Media3 cache หรือโหลดหน้าใหม่
 
+## ทดสอบบน Xiaomi 14 (Android 16 / HyperOS)
+
+เครื่องนี้อาจจำกัดพื้นหลังแรง — แอปจึงรัน ffmpeg mux ใน **foreground service** พร้อม notification
+
+แนะนำตั้งค่าครั้งแรก:
+1. อนุญาต **การแจ้งเตือน** (POST_NOTIFICATIONS)
+2. เมื่อเริ่มดาวน์โหลด HLS แอปจะถามให้ปิดจำกัดแบตเตอรี่ — กดอนุญาต
+3. ในตั้งค่าแอป Xiaomi: เปิด **Autostart** + ตั้ง Battery เป็น **No restrictions** / ไม่จำกัด
+4. ตอน mux ยาวๆ อย่าปัดแอปออกจาก Recents
+
+ABI ที่แพ็กไว้รวม `arm64-v8a` (ตรงกับ Xiaomi 14)
+
 ## สถาปัตยกรรมหลัก
 
 | ไฟล์ | หน้าที่ |
@@ -36,13 +49,15 @@
 | `webview/VideoUrlMatcher.kt` | pure function จับคู่ URL → ประเภทวิดีโอ (unit-test ได้) |
 | `webview/VideoInterceptingWebViewClient.kt` | ดัก request ใน WebView แล้วส่ง callback (thread-safe) |
 | `viewmodel/VideoDownloaderViewModel.kt` | StateFlow + synchronized set กัน URL ซ้ำ |
-| `viewmodel/DownloadsViewModel.kt` | รวมสถานะ Media3 + ffmpeg history |
+| `viewmodel/DownloadsViewModel.kt` | รวมสถานะ Media3 + ffmpeg history/jobs |
 | `ui/MainScreen.kt` | Compose UI: TextField, WebView, LazyColumn |
-| `ui/DownloadsScreen.kt` | library + offline player / เปิด-แชร์ MP4 |
+| `ui/DownloadsScreen.kt` | library + offline player / progress / เปิด-แชร์ |
 | `download/DownloadHelper.kt` | DownloadManager สำหรับ MP4 + เมนูเลือกโหมด HLS |
 | `download/HlsDownloadStrategy.kt` | interface + `Media3HlsDownloadStrategy` |
-| `download/FfmpegHlsDownloadStrategy.kt` | mux HLS → MP4 ด้วย ffmpeg-kit |
-| `download/OfflineDownloadRepository.kt` | รวม Media3 downloads + ffmpeg history |
+| `download/FfmpegHlsDownloadStrategy.kt` | สตาร์ท `FfmpegMuxService` |
+| `download/FfmpegMuxService.kt` | foreground mux + notification progress |
+| `download/FfmpegJobTracker.kt` | progress ของงาน ffmpeg ที่กำลังรัน |
+| `download/OfflineDownloadRepository.kt` | รวม Media3 + ffmpeg jobs/history |
 | `download/FfmpegHistoryStore.kt` | persist รายการ MP4 ที่ mux แล้ว |
 | `download/VideoDownloadService.kt` | Media3 `DownloadService` (foreground) |
 | `download/Media3DownloadUtil.kt` | Singleton cache + `DownloadManager` |
@@ -51,12 +66,13 @@
 
 - minSdk 24 / targetSdk 34 / compileSdk 35
 - Android Studio (แนะนำ Hedgehog ขึ้นไป) พร้อม JDK 17
+- ทดสอบจริงบน Xiaomi 14 (Android 16)
 - Gradle sync ตาม `gradle/libs.versions.toml`
   - Compose BOM `2025.08.00`
   - Media3 `1.5.1` (+ `media3-ui`)
   - ffmpeg-kit-https `8.1.7` (`dev.ffmpegkit-maintained`)
 
-> หมายเหตุ: `compileSdk` ตั้งเป็น 35 เพราะ Compose BOM ล่าสุดบังคับ — `targetSdk` ยังเป็น 34 ตามสเปก
+> หมายเหตุ: `compileSdk` ตั้งเป็น 35 เพราะ Compose BOM ล่าสุดบังคับ — `targetSdk` ยังเป็น 34 ตามสเปกเดิม (รันบน Android 16 ได้)
 
 ## โหมด HLS ที่รองรับแล้ว
 
@@ -66,6 +82,7 @@
 
 ### b) ffmpeg-kit (mux เป็น `.mp4`)
 - dependency: `dev.ffmpegkit-maintained:ffmpeg-kit-https`
+- รันใน `FfmpegMuxService` (foreground) พร้อม progress notification
 - คำสั่งโดยประมาณ:
 
 ```bash

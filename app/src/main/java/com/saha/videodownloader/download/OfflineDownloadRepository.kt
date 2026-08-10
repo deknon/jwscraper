@@ -7,6 +7,7 @@ import androidx.media3.datasource.cache.CacheDataSource
 import androidx.media3.exoplayer.offline.Download
 import androidx.media3.exoplayer.offline.DownloadManager
 import androidx.media3.exoplayer.offline.DownloadService
+import com.arthenica.ffmpegkit.FFmpegKit
 import com.saha.videodownloader.model.LibraryDownload
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
@@ -26,8 +27,25 @@ class OfflineDownloadRepository(context: Context) {
     private val historyStore = FfmpegHistoryStore(appContext)
 
     fun observeLibrary(): Flow<List<LibraryDownload>> =
-        combine(observeMedia3Downloads(), observeFfmpegHistory()) { media3, ffmpeg ->
-            (media3 + ffmpeg).sortedByDescending { it.updatedAtMs }
+        combine(
+            observeMedia3Downloads(),
+            observeFfmpegHistory(),
+            FfmpegJobTracker.snapshot
+        ) { media3, ffmpegHistory, ffmpegJobs ->
+            val activeFfmpeg = ffmpegJobs.map { job ->
+                LibraryDownload(
+                    id = job.id,
+                    title = job.title,
+                    sourceUrl = job.sourceUrl,
+                    kind = LibraryDownload.Kind.FFMPEG_MP4,
+                    state = job.state,
+                    progressPercent = job.progressPercent,
+                    contentUri = null,
+                    updatedAtMs = job.updatedAtMs,
+                    statusMessage = job.message
+                )
+            }
+            (media3 + activeFfmpeg + ffmpegHistory).sortedByDescending { it.updatedAtMs }
         }
 
     fun recordFfmpegSuccess(sourceUrl: String, title: String, contentUri: String) {
@@ -43,7 +61,28 @@ class OfflineDownloadRepository(context: Context) {
     }
 
     fun removeFfmpegEntry(id: String) {
+        if (id.startsWith("ffmpeg-job:")) {
+            cancelFfmpegJob(id)
+            return
+        }
         historyStore.remove(id)
+    }
+
+    fun cancelFfmpegJob(id: String) {
+        val sessionId = FfmpegJobTracker.get(id)?.sessionId
+        if (sessionId != null) {
+            FFmpegKit.cancel(sessionId)
+        }
+        FfmpegJobTracker.remove(id)
+        // Ask the mux service to drop its foreground notification.
+        runCatching {
+            appContext.startService(
+                android.content.Intent(appContext, FfmpegMuxService::class.java).apply {
+                    action = FfmpegMuxService.ACTION_CANCEL
+                    putExtra(FfmpegMuxService.EXTRA_JOB_ID, id)
+                }
+            )
+        }
     }
 
     fun removeMedia3Download(id: String) {
@@ -115,7 +154,8 @@ class OfflineDownloadRepository(context: Context) {
                         state = LibraryDownload.State.COMPLETED,
                         progressPercent = 1f,
                         contentUri = entry.contentUri,
-                        updatedAtMs = entry.createdAtMs
+                        updatedAtMs = entry.createdAtMs,
+                        statusMessage = null
                     )
                 }
             }
@@ -130,7 +170,8 @@ class OfflineDownloadRepository(context: Context) {
             state = state.toLibraryState(),
             progressPercent = percentDownloaded.coerceIn(0f, 100f) / 100f,
             contentUri = null,
-            updatedAtMs = updateTimeMs
+            updatedAtMs = updateTimeMs,
+            statusMessage = null
         )
     }
 
