@@ -11,7 +11,7 @@ import java.net.URI
 
 object DownloadHelper {
 
-    private val hlsStrategy: HlsDownloadStrategy = Media3HlsDownloadStrategy()
+    private val media3HlsStrategy: HlsDownloadStrategy = Media3HlsDownloadStrategy()
 
     /**
      * Enqueues an MP4 download via [DownloadManager].
@@ -45,23 +45,41 @@ object DownloadHelper {
     }
 
     /**
-     * Explains HLS offline caching via Media3, then starts [HlsDownloadStrategy].
+     * Lets the user pick HLS download mode:
+     * - ffmpeg mux → single `.mp4` in Downloads
+     * - Media3 offline cache (ExoPlayer)
      */
-    fun handleHlsUrl(context: Context, url: String) {
+    fun handleHlsUrl(
+        context: Context,
+        url: String,
+        onDownloadStarted: (() -> Unit)? = null,
+        onDownloadFinished: (() -> Unit)? = null
+    ) {
+        val options = arrayOf(
+            "Mux เป็น MP4 (ffmpeg) — ไฟล์ใน Downloads",
+            "Media3 offline cache — เล่นในแอป"
+        )
         AlertDialog.Builder(context)
             .setTitle("HLS (.m3u8)")
-            .setMessage(
-                "URL นี้เป็น HLS playlist\n\n" +
-                    "จะดาวน์โหลด segment เข้า Media3 offline cache " +
-                    "(เล่นออฟไลน์ผ่าน ExoPlayer ได้) — " +
-                    "ยังไม่ mux เป็นไฟล์ .mp4 เดี่ยว\n\n" +
-                    "ต้องการเริ่มดาวน์โหลดหรือไม่?"
-            )
-            .setPositiveButton("ดาวน์โหลด") { dialog, _ ->
+            .setItems(options) { dialog, which ->
                 dialog.dismiss()
                 try {
-                    hlsStrategy.download(url, context)
+                    when (which) {
+                        0 -> FfmpegHlsDownloadStrategy(
+                            onStarted = onDownloadStarted,
+                            onFinished = onDownloadFinished
+                        ).download(url, context)
+                        1 -> {
+                            onDownloadStarted?.invoke()
+                            try {
+                                media3HlsStrategy.download(url, context)
+                            } finally {
+                                onDownloadFinished?.invoke()
+                            }
+                        }
+                    }
                 } catch (e: Exception) {
+                    onDownloadFinished?.invoke()
                     Toast.makeText(
                         context,
                         e.message ?: "HLS ดาวน์โหลดไม่สำเร็จ",

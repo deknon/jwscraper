@@ -16,6 +16,11 @@ android {
         versionName = "1.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+
+        ndk {
+            // ffmpeg-kit ships large native binaries — keep phone ABIs only.
+            abiFilters += listOf("armeabi-v7a", "arm64-v8a", "x86_64")
+        }
     }
 
     buildTypes {
@@ -61,6 +66,7 @@ dependencies {
     implementation(libs.androidx.media3.database)
     implementation(libs.androidx.media3.datasource)
     implementation(libs.androidx.media3.common)
+    implementation(libs.ffmpeg.kit.https)
 
     implementation(platform(libs.androidx.compose.bom))
     implementation(libs.androidx.ui)

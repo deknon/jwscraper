@@ -162,16 +162,24 @@ fun MainScreen(
                 onDownload = {
                     val selected = detectedVideos.firstOrNull { it.url == selectedUrl }
                     if (selected != null) {
-                        viewModel.setDownloading(true)
                         when (selected.type) {
-                            VideoType.MP4 -> DownloadHelper.downloadMp4(context, selected.url)
-                            VideoType.HLS -> DownloadHelper.handleHlsUrl(context, selected.url)
-                            VideoType.UNKNOWN -> DownloadHelper.handleUnknownOrOther(
-                                context,
-                                selected.url
+                            VideoType.MP4 -> {
+                                viewModel.setDownloading(true)
+                                DownloadHelper.downloadMp4(context, selected.url)
+                                viewModel.setDownloading(false)
+                            }
+                            VideoType.HLS -> DownloadHelper.handleHlsUrl(
+                                context = context,
+                                url = selected.url,
+                                onDownloadStarted = { viewModel.setDownloading(true) },
+                                onDownloadFinished = { viewModel.setDownloading(false) }
                             )
+                            VideoType.UNKNOWN -> {
+                                viewModel.setDownloading(true)
+                                DownloadHelper.handleUnknownOrOther(context, selected.url)
+                                viewModel.setDownloading(false)
+                            }
                         }
-                        viewModel.setDownloading(false)
                     }
                 },
                 onClear = { viewModel.clearDetectedUrls() },
