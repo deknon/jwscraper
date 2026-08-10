@@ -12,14 +12,15 @@ android {
         applicationId = "com.saha.videodownloader"
         minSdk = 24
         targetSdk = 34
-        versionCode = 2
-        versionName = "1.0.1"
+        versionCode = 3
+        versionName = "1.0.3"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
         ndk {
-            // ffmpeg-kit ships large native binaries — keep phone ABIs only.
-            abiFilters += listOf("armeabi-v7a", "arm64-v8a", "x86_64")
+            // ffmpegkit-maintained publishes arm64-v8a (phones) + x86_64 (emulator).
+            // Do not include armeabi-v7a — that ABI has no ffmpeg .so and breaks load.
+            abiFilters += listOf("arm64-v8a", "x86_64")
         }
     }
 
@@ -50,6 +51,11 @@ android {
         resources {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
         }
+        jniLibs {
+            // Extract .so to disk — more reliable on HyperOS / Android 16 than
+            // loading compressed libs directly from the APK.
+            useLegacyPackaging = true
+        }
     }
 }
 
@@ -68,6 +74,7 @@ dependencies {
     implementation(libs.androidx.media3.common)
     implementation(libs.androidx.media3.ui)
     implementation(libs.ffmpeg.kit.https)
+    implementation(libs.arthenica.smart.exception.java)
 
     implementation(platform(libs.androidx.compose.bom))
     implementation(libs.androidx.ui)

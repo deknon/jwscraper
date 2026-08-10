@@ -82,6 +82,7 @@ ABI ที่แพ็กไว้รวม `arm64-v8a` (ตรงกับ Xiao
   - Compose BOM `2025.08.00`
   - Media3 `1.5.1` (+ `media3-ui`)
   - ffmpeg-kit-https `8.1.7` (`dev.ffmpegkit-maintained`)
+  - smart-exception-java `0.2.1` (`com.arthenica`) — required by FFmpegKitConfig init (not declared in the https AAR POM)
 
 > หมายเหตุ: `compileSdk` ตั้งเป็น 35 เพราะ Compose BOM ล่าสุดบังคับ — `targetSdk` ยังเป็น 34 ตามสเปกเดิม (รันบน Android 16 ได้)
 

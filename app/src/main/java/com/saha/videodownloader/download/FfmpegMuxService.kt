@@ -99,6 +99,15 @@ class FfmpegMuxService : Service() {
 
         FfmpegJobTracker.updateProgress(jobId, 0f, "กำลังเตรียม ffmpeg…")
 
+        val init = FfmpegKitLoader.ensureReady()
+        if (init.isFailure) {
+            val detail = init.exceptionOrNull()?.message ?: "ffmpeg-kit init failed"
+            FfmpegJobTracker.fail(jobId, "เริ่ม ffmpeg ไม่ได้: $detail")
+            updateNotification(jobId, filename, 0, "เริ่ม ffmpeg ไม่ได้", ongoing = false)
+            stopSelfSafely()
+            return
+        }
+
         val workDir = File(cacheDir, "hls_mux").apply { mkdirs() }
         val outputFile = File(workDir, filename)
         if (outputFile.exists()) outputFile.delete()
@@ -207,7 +216,7 @@ class FfmpegMuxService : Service() {
             Log.e(TAG, "ffmpeg execute failed to start", t)
             FfmpegJobTracker.fail(
                 jobId,
-                "เริ่ม ffmpeg ไม่ได้: ${t.message ?: t.javaClass.simpleName}"
+                "เริ่ม ffmpeg ไม่ได้: ${FfmpegKitLoader.formatThrowable(t)}"
             )
             updateNotification(
                 jobId,
