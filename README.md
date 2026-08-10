@@ -14,8 +14,12 @@
      1. **Mux เป็น MP4 (ffmpeg)** — รวม segment เป็นไฟล์ `.mp4` ใน Downloads
      2. **Media3 offline cache** — แคชสำหรับเล่นออฟไลน์ในแอป (ExoPlayer)
    - **UNKNOWN** → พยายามดาวน์โหลดแบบ progressive ผ่าน `DownloadManager`
+6. กด **ดาวน์โหลด** มุมขวาบนเพื่อเปิดหน้า library:
+   - Media3 → ปุ่ม **เล่น** (ExoPlayer อ่านจาก offline cache)
+   - ffmpeg MP4 → ปุ่ม **เปิด** / **แชร์**
+   - ลบรายการได้ทั้งสองโหมด
 
-ปุ่ม **ล้างรายการ** ล้าง URL ที่ตรวจพบทั้งหมด
+ปุ่ม **ล้างรายการ** ล้าง URL ที่ตรวจพบทั้งหมด (ไม่ลบไฟล์ที่ดาวน์โหลดแล้ว)
 
 ## ข้อจำกัด
 
@@ -28,13 +32,18 @@
 | ไฟล์ | หน้าที่ |
 |------|---------|
 | `model/DetectedVideoUrl.kt` | โมเดล URL ที่ตรวจพบ + `VideoType` |
+| `model/LibraryDownload.kt` | รายการในหน้า library |
 | `webview/VideoUrlMatcher.kt` | pure function จับคู่ URL → ประเภทวิดีโอ (unit-test ได้) |
 | `webview/VideoInterceptingWebViewClient.kt` | ดัก request ใน WebView แล้วส่ง callback (thread-safe) |
 | `viewmodel/VideoDownloaderViewModel.kt` | StateFlow + synchronized set กัน URL ซ้ำ |
-| `ui/MainScreen.kt` | Compose UI: TextField, WebView, LazyColumn, ปุ่มดาวน์โหลด |
+| `viewmodel/DownloadsViewModel.kt` | รวมสถานะ Media3 + ffmpeg history |
+| `ui/MainScreen.kt` | Compose UI: TextField, WebView, LazyColumn |
+| `ui/DownloadsScreen.kt` | library + offline player / เปิด-แชร์ MP4 |
 | `download/DownloadHelper.kt` | DownloadManager สำหรับ MP4 + เมนูเลือกโหมด HLS |
 | `download/HlsDownloadStrategy.kt` | interface + `Media3HlsDownloadStrategy` |
-| `download/FfmpegHlsDownloadStrategy.kt` | mux HLS → MP4 ด้วย ffmpeg-kit แล้วบันทึก Downloads |
+| `download/FfmpegHlsDownloadStrategy.kt` | mux HLS → MP4 ด้วย ffmpeg-kit |
+| `download/OfflineDownloadRepository.kt` | รวม Media3 downloads + ffmpeg history |
+| `download/FfmpegHistoryStore.kt` | persist รายการ MP4 ที่ mux แล้ว |
 | `download/VideoDownloadService.kt` | Media3 `DownloadService` (foreground) |
 | `download/Media3DownloadUtil.kt` | Singleton cache + `DownloadManager` |
 
@@ -44,7 +53,7 @@
 - Android Studio (แนะนำ Hedgehog ขึ้นไป) พร้อม JDK 17
 - Gradle sync ตาม `gradle/libs.versions.toml`
   - Compose BOM `2025.08.00`
-  - Media3 `1.5.1`
+  - Media3 `1.5.1` (+ `media3-ui`)
   - ffmpeg-kit-https `8.1.7` (`dev.ffmpegkit-maintained`)
 
 > หมายเหตุ: `compileSdk` ตั้งเป็น 35 เพราะ Compose BOM ล่าสุดบังคับ — `targetSdk` ยังเป็น 34 ตามสเปก
@@ -53,7 +62,7 @@
 
 ### a) Media3 ExoPlayer DownloadService
 - offline caching ของ HLS segment ในแอป
-- เล่นออฟไลน์ผ่าน ExoPlayer ได้
+- เล่นออฟไลน์ผ่าน ExoPlayer ได้จากหน้า library
 
 ### b) ffmpeg-kit (mux เป็น `.mp4`)
 - dependency: `dev.ffmpegkit-maintained:ffmpeg-kit-https`
@@ -64,6 +73,7 @@ ffmpeg -user_agent "..." -i playlist.m3u8 -c copy -bsf:a aac_adtstoasc -movflags
 ```
 
 - บันทึกไฟล์ไปยังโฟลเดอร์ Downloads (MediaStore บน API 29+)
+- เปิด/แชร์ได้จากหน้า library
 - ขนาด APK ใหญ่ขึ้นเพราะ native binaries ของ ffmpeg
 
 ---

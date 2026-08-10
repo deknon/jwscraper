@@ -36,6 +36,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
@@ -65,6 +66,7 @@ import com.saha.videodownloader.webview.VideoInterceptingWebViewClient
 @Composable
 fun MainScreen(
     viewModel: VideoDownloaderViewModel,
+    onOpenDownloads: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
@@ -101,6 +103,11 @@ fun MainScreen(
                             text = "saha Video Downloader",
                             fontWeight = FontWeight.SemiBold
                         )
+                    }
+                },
+                actions = {
+                    TextButton(onClick = onOpenDownloads) {
+                        Text("ดาวน์โหลด")
                     }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(

@@ -53,6 +53,11 @@ class FfmpegHlsDownloadStrategy(
                 if (ReturnCode.isSuccess(session.returnCode)) {
                     val published = publishToDownloads(appContext, outputFile, filename)
                     if (published != null) {
+                        OfflineDownloadRepository(appContext).recordFfmpegSuccess(
+                            sourceUrl = url,
+                            title = filename,
+                            contentUri = published.toString()
+                        )
                         toast(appContext, "บันทึกแล้ว: $filename")
                     } else {
                         toast(
