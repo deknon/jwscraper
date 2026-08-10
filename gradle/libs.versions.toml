@@ -12,6 +12,7 @@ webkit = "1.12.1"
 material = "1.12.0"
 media3 = "1.5.1"
 ffmpegKit = "8.1.7"
+smartException = "0.2.1"
 
 [libraries]
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
@@ -39,6 +40,8 @@ androidx-media3-datasource = { group = "androidx.media3", name = "media3-datasou
 androidx-media3-common = { group = "androidx.media3", name = "media3-common", version.ref = "media3" }
 androidx-media3-ui = { group = "androidx.media3", name = "media3-ui", version.ref = "media3" }
 ffmpeg-kit-https = { group = "dev.ffmpegkit-maintained", name = "ffmpeg-kit-https", version.ref = "ffmpegKit" }
+# Required by FFmpegKitConfig <clinit>; missing from ffmpeg-kit-https 8.1.7 POM.
+arthenica-smart-exception-java = { group = "com.arthenica", name = "smart-exception-java", version.ref = "smartException" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }
