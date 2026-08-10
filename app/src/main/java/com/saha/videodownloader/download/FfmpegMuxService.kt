@@ -23,6 +23,7 @@ import com.saha.videodownloader.R
 import java.io.File
 import java.net.URI
 import java.util.UUID
+import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
 import kotlin.math.max
@@ -37,6 +38,8 @@ import kotlin.math.max
 class FfmpegMuxService : Service() {
 
     private val activeSessionId = AtomicReference<Long?>(null)
+    private val prepareExecutor = Executors.newSingleThreadExecutor()
+    private val localPlaylistRef = AtomicReference<File?>(null)
 
     override fun onCreate() {
         super.onCreate()
@@ -132,40 +135,59 @@ class FfmpegMuxService : Service() {
         val outputFile = File(workDir, filename)
         if (outputFile.exists()) outputFile.delete()
 
-        WebViewCookieHelper.flush()
-        val httpHeaders = WebViewCookieHelper.buildFfmpegHeaders(url, refererUrl, userAgent)
-        val resolvedReferer = WebViewCookieHelper.resolveReferer(url, refererUrl)
-        Log.i(
-            TAG,
-            "mux headers referer=$resolvedReferer cookie=" +
-                (httpHeaders.contains("Cookie:")).toString()
-        )
-        val durationMs = AtomicLong(0L)
-        runCatching {
-            // Best-effort duration for progress; mux does not wait on probe.
-            FFprobeKit.getMediaInformationAsync(url) { probeSession ->
-                val durationSec = probeSession.mediaInformation?.duration?.toDoubleOrNull() ?: 0.0
-                durationMs.set(max(0L, (durationSec * 1000.0).toLong()))
+        FfmpegJobTracker.updateProgress(jobId, 0f, "กำลังดึง playlist…")
+        prepareExecutor.execute {
+            try {
+                WebViewCookieHelper.flush()
+                val prepared = HlsPlaylistPreparer.prepare(
+                    mediaUrl = url,
+                    pageUrl = refererUrl,
+                    userAgent = userAgent,
+                    workDir = workDir
+                )
+                localPlaylistRef.set(prepared.localPlaylist)
+                val input = prepared.inputUrl
+                val httpHeaders = WebViewCookieHelper.buildFfmpegHeaders(url, refererUrl, userAgent)
+                val resolvedReferer = WebViewCookieHelper.resolveReferer(url, refererUrl)
+                Log.i(TAG, "playlist ready: ${prepared.note} input=$input")
+
+                val durationMs = AtomicLong(0L)
+                runCatching {
+                    FFprobeKit.getMediaInformationAsync(input) { probeSession ->
+                        val durationSec =
+                            probeSession.mediaInformation?.duration?.toDoubleOrNull() ?: 0.0
+                        durationMs.set(max(0L, (durationSec * 1000.0).toLong()))
+                    }
+                }
+
+                val strategies = buildMuxStrategies(
+                    input = input,
+                    originalUrl = url,
+                    userAgent = userAgent,
+                    headers = httpHeaders,
+                    referer = resolvedReferer,
+                    outputPath = outputFile.absolutePath
+                )
+                runMuxAttempt(
+                    jobId = jobId,
+                    url = url,
+                    filename = filename,
+                    outputFile = outputFile,
+                    durationMs = durationMs,
+                    strategies = strategies,
+                    attemptIndex = 0,
+                    lastError = null
+                )
+            } catch (t: Throwable) {
+                Log.e(TAG, "playlist prepare failed", t)
+                val message = t.message?.takeIf { it.isNotBlank() }
+                    ?: "เตรียม playlist ไม่สำเร็จ"
+                FfmpegJobTracker.fail(jobId, message)
+                updateNotification(jobId, filename, 0, message, ongoing = false)
+                cleanupLocalPlaylist()
+                stopSelfSafely()
             }
         }
-
-        val strategies = buildMuxStrategies(
-            url = url,
-            userAgent = userAgent,
-            headers = httpHeaders,
-            referer = resolvedReferer,
-            outputPath = outputFile.absolutePath
-        )
-        runMuxAttempt(
-            jobId = jobId,
-            url = url,
-            filename = filename,
-            outputFile = outputFile,
-            durationMs = durationMs,
-            strategies = strategies,
-            attemptIndex = 0,
-            lastError = null
-        )
     }
 
     private fun runMuxAttempt(
@@ -183,6 +205,7 @@ class FfmpegMuxService : Service() {
             FfmpegJobTracker.fail(jobId, message)
             updateNotification(jobId, filename, 0, message, ongoing = false)
             runCatching { if (outputFile.exists()) outputFile.delete() }
+            cleanupLocalPlaylist()
             stopSelfSafely()
             return
         }
@@ -229,20 +252,24 @@ class FfmpegMuxService : Service() {
                                     )
                                 }
                                 runCatching { if (outputFile.exists()) outputFile.delete() }
+                                cleanupLocalPlaylist()
                                 stopSelfSafely()
                             }
                             ReturnCode.isCancel(completed.returnCode) -> {
                                 FfmpegJobTracker.remove(jobId)
                                 runCatching { if (outputFile.exists()) outputFile.delete() }
+                                cleanupLocalPlaylist()
                                 stopSelfSafely()
                             }
                             else -> {
                                 val err = extractFfmpegError(completed)
                                 Log.w(TAG, "mux attempt ${attemptIndex + 1} failed: $err")
-                                val hint = if (err.contains("403") || err.contains("Forbidden", true)) {
-                                    " — เซิร์ฟเวอร์ปฏิเสธ (ลองเปิดหน้าเว็บให้เล่นวิดีโอก่อน แล้วดาวน์โหลดใหม่)"
-                                } else {
-                                    ""
+                                val hint = when {
+                                    err.contains("403") || err.contains("Forbidden", true) ->
+                                        " — เซิร์ฟเวอร์ปฏิเสธ (เปิดหน้าให้วิดีโอเล่นก่อน แล้วดาวน์โหลดใหม่)"
+                                    err.contains("Invalid data", true) ->
+                                        " — ข้อมูลไม่ใช่สตรีมวิดีโอ/playlist เสีย (ลองเลือกลิงก์ .m3u8 อื่น)"
+                                    else -> ""
                                 }
                                 runMuxAttempt(
                                     jobId = jobId,
@@ -263,6 +290,7 @@ class FfmpegMuxService : Service() {
                             "mux error: ${t.message ?: t.javaClass.simpleName}"
                         )
                         runCatching { if (outputFile.exists()) outputFile.delete() }
+                        cleanupLocalPlaylist()
                         stopSelfSafely()
                     }
                 },
@@ -370,6 +398,12 @@ class FfmpegMuxService : Service() {
         stopSelf()
     }
 
+    private fun cleanupLocalPlaylist() {
+        localPlaylistRef.getAndSet(null)?.let { file ->
+            runCatching { if (file.exists()) file.delete() }
+        }
+    }
+
     private data class MuxStrategy(val label: String, val args: Array<String>)
 
     companion object {
@@ -433,41 +467,36 @@ class FfmpegMuxService : Service() {
         }
 
         private fun buildMuxStrategies(
-            url: String,
+            input: String,
+            originalUrl: String,
             userAgent: String,
             headers: String,
             referer: String,
             outputPath: String
         ): List<MuxStrategy> {
-            fun prefix(extraHeaders: String? = null): Array<String> {
-                val hdr = extraHeaders ?: headers
-                return arrayOf(
+            fun prefix(useHlsFormat: Boolean = true): Array<String> {
+                val base = mutableListOf(
                     "-y",
                     "-user_agent", userAgent,
                     "-referer", referer,
-                    "-headers", hdr,
+                    "-headers", headers,
                     "-allowed_extensions", "ALL",
                     "-protocol_whitelist", "file,http,https,tcp,tls,crypto,data,pipe",
                     "-reconnect", "1",
                     "-reconnect_streamed", "1",
-                    "-reconnect_delay_max", "5",
-                    "-i", url
+                    "-reconnect_delay_max", "5"
                 )
+                if (useHlsFormat) {
+                    base += listOf("-f", "hls")
+                }
+                base += listOf("-i", input)
+                return base.toTypedArray()
             }
-            // Host-only referer fallback (some CDNs reject deep page paths).
-            val hostReferer = try {
-                val uri = URI(referer)
-                val host = uri.host
-                if (host.isNullOrBlank()) referer else "${uri.scheme ?: "https"}://$host/"
-            } catch (_: Exception) {
-                referer
-            }
-            val hostHeaders = WebViewCookieHelper.buildFfmpegHeaders(url, hostReferer, userAgent)
 
             return listOf(
                 MuxStrategy(
-                    label = "copy+aac_bsf",
-                    args = prefix() + arrayOf(
+                    label = "hls+copy+aac_bsf",
+                    args = prefix(useHlsFormat = true) + arrayOf(
                         "-c", "copy",
                         "-bsf:a", "aac_adtstoasc",
                         "-movflags", "+faststart",
@@ -475,26 +504,33 @@ class FfmpegMuxService : Service() {
                     )
                 ),
                 MuxStrategy(
-                    label = "copy",
-                    args = prefix() + arrayOf(
+                    label = "hls+copy",
+                    args = prefix(useHlsFormat = true) + arrayOf(
                         "-c", "copy",
                         "-movflags", "+faststart",
                         outputPath
                     )
                 ),
                 MuxStrategy(
-                    label = "host-referer",
+                    label = "auto+copy+aac_bsf",
+                    args = prefix(useHlsFormat = false) + arrayOf(
+                        "-c", "copy",
+                        "-bsf:a", "aac_adtstoasc",
+                        "-movflags", "+faststart",
+                        outputPath
+                    )
+                ),
+                // Last resort: hit the original remote URL (not local rewrite).
+                MuxStrategy(
+                    label = "remote+copy",
                     args = arrayOf(
                         "-y",
                         "-user_agent", userAgent,
-                        "-referer", hostReferer,
-                        "-headers", hostHeaders,
+                        "-referer", referer,
+                        "-headers", headers,
                         "-allowed_extensions", "ALL",
                         "-protocol_whitelist", "file,http,https,tcp,tls,crypto,data,pipe",
-                        "-reconnect", "1",
-                        "-reconnect_streamed", "1",
-                        "-reconnect_delay_max", "5",
-                        "-i", url,
+                        "-i", originalUrl,
                         "-c", "copy",
                         "-bsf:a", "aac_adtstoasc",
                         "-movflags", "+faststart",
@@ -502,8 +538,8 @@ class FfmpegMuxService : Service() {
                     )
                 ),
                 MuxStrategy(
-                    label = "copyV+aac",
-                    args = prefix() + arrayOf(
+                    label = "hls+copyV+aac",
+                    args = prefix(useHlsFormat = true) + arrayOf(
                         "-c:v", "copy",
                         "-c:a", "aac",
                         "-b:a", "128k",
