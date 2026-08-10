@@ -2,8 +2,6 @@ package com.saha.videodownloader.ui
 
 import android.annotation.SuppressLint
 import android.app.Activity
-import android.content.ClipData
-import android.content.ClipboardManager
 import android.content.Context
 import android.content.ContextWrapper
 import android.graphics.Bitmap
@@ -19,12 +17,10 @@ import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -34,11 +30,8 @@ import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
@@ -52,14 +45,8 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.FilterChip
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.OutlinedTextFieldDefaults
-import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
@@ -80,7 +67,6 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
@@ -96,7 +82,6 @@ import com.saha.videodownloader.download.WebViewCookieHelper
 import com.saha.videodownloader.model.DetectedVideoUrl
 import com.saha.videodownloader.model.LibraryDownload
 import com.saha.videodownloader.model.VideoType
-import com.saha.videodownloader.viewmodel.DetectedFilter
 import com.saha.videodownloader.viewmodel.VideoDownloaderViewModel
 import com.saha.videodownloader.webview.VideoInterceptingWebViewClient
 
@@ -110,16 +95,12 @@ fun MainScreen(
 ) {
     val context = LocalContext.current
     val detectedVideos by viewModel.detectedVideos.collectAsStateWithLifecycle()
-    val filteredVideos by viewModel.filteredVideos.collectAsStateWithLifecycle()
-    val filter by viewModel.filter.collectAsStateWithLifecycle()
     val isPageLoading by viewModel.isPageLoading.collectAsStateWithLifecycle()
     val isDownloading by viewModel.isDownloading.collectAsStateWithLifecycle()
-    val selectedUrl by viewModel.selectedUrl.collectAsStateWithLifecycle()
     val pendingNavigateUrl by viewModel.pendingNavigateUrl.collectAsStateWithLifecycle()
     val recentUrls by viewModel.recentUrls.collectAsStateWithLifecycle()
     val useDesktopUa by viewModel.useDesktopUa.collectAsStateWithLifecycle()
     val reloadToken by viewModel.reloadToken.collectAsStateWithLifecycle()
-    val searchQuery by viewModel.searchQuery.collectAsStateWithLifecycle()
     val ffmpegJobs by FfmpegJobTracker.snapshot.collectAsStateWithLifecycle()
 
     var urlInput by remember { mutableStateOf(initialUrl?.takeIf { it.isNotBlank() } ?: "https://") }
@@ -232,6 +213,10 @@ fun MainScreen(
                     viewModel.clearDetectedUrls()
                     Toast.makeText(context, "ล้างคุกกี้/แคชแล้ว", Toast.LENGTH_SHORT).show()
                     viewModel.reloadPage()
+                },
+                onClearDetected = {
+                    menuExpanded = false
+                    viewModel.clearDetectedUrls()
                 }
             )
         },
@@ -243,51 +228,34 @@ fun MainScreen(
                 shadowElevation = 4.dp
             ) {
                 DetectedListSection(
-                    videos = filteredVideos,
-                    totalCount = detectedVideos.size,
+                    videos = detectedVideos,
                     expanded = listExpanded,
                     onExpandedChange = { listExpanded = it },
-                    filter = filter,
-                    onFilterChange = { viewModel.setFilter(it) },
-                    searchQuery = searchQuery,
-                    onSearchQueryChange = { viewModel.setSearchQuery(it) },
-                    selectedUrl = selectedUrl,
-                    onSelect = { viewModel.selectUrl(it) },
-                    onCopy = { url ->
-                        val clipboard =
-                            context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                        clipboard.setPrimaryClip(ClipData.newPlainText("video-url", url))
-                        Toast.makeText(context, "คัดลอก URL แล้ว", Toast.LENGTH_SHORT).show()
-                    },
-                    onDownload = {
-                        val selected = detectedVideos.firstOrNull { it.url == selectedUrl }
-                        if (selected != null) {
-                            when (selected.type) {
-                                VideoType.MP4 -> {
-                                    viewModel.setDownloading(true)
-                                    DownloadHelper.downloadMp4(context, selected.url)
-                                    viewModel.setDownloading(false)
-                                }
-                                VideoType.HLS -> DownloadHelper.handleHlsUrl(
-                                    context = context,
-                                    url = selected.url,
-                                    onDownloadStarted = { viewModel.setDownloading(true) },
-                                    onDownloadFinished = { viewModel.setDownloading(false) },
-                                    userAgent = viewModel.currentUserAgent(),
-                                    refererUrl = viewModel.currentPageUrl.value
-                                        ?: urlInput.takeIf {
-                                            it.startsWith("http://") || it.startsWith("https://")
-                                        }
-                                )
-                                VideoType.UNKNOWN -> {
-                                    viewModel.setDownloading(true)
-                                    DownloadHelper.handleUnknownOrOther(context, selected.url)
-                                    viewModel.setDownloading(false)
-                                }
+                    onDownloadItem = { item ->
+                        when (item.type) {
+                            VideoType.MP4 -> {
+                                viewModel.setDownloading(true)
+                                DownloadHelper.downloadMp4(context, item.url)
+                                viewModel.setDownloading(false)
+                            }
+                            VideoType.HLS -> DownloadHelper.handleHlsUrl(
+                                context = context,
+                                url = item.url,
+                                onDownloadStarted = { viewModel.setDownloading(true) },
+                                onDownloadFinished = { viewModel.setDownloading(false) },
+                                userAgent = viewModel.currentUserAgent(),
+                                refererUrl = viewModel.currentPageUrl.value
+                                    ?: urlInput.takeIf {
+                                        it.startsWith("http://") || it.startsWith("https://")
+                                    }
+                            )
+                            VideoType.UNKNOWN -> {
+                                viewModel.setDownloading(true)
+                                DownloadHelper.handleUnknownOrOther(context, item.url)
+                                viewModel.setDownloading(false)
                             }
                         }
                     },
-                    onClear = { viewModel.clearDetectedUrls() },
                     modifier = Modifier
                         .fillMaxWidth()
                         .navigationBarsPadding()
@@ -384,6 +352,7 @@ private fun CompactTopChrome(
     onHistory: () -> Unit,
     onReload: () -> Unit,
     onClearSiteData: () -> Unit,
+    onClearDetected: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     // Surface draws behind the status bar; row content is padded below it.
@@ -487,6 +456,10 @@ private fun CompactTopChrome(
                 DropdownMenuItem(
                     text = { Text("ล้างข้อมูลไซต์") },
                     onClick = onClearSiteData
+                )
+                DropdownMenuItem(
+                    text = { Text("ล้างรายการวิดีโอ") },
+                    onClick = onClearDetected
                 )
             }
         }
@@ -660,18 +633,9 @@ private fun VideoWebView(
 @Composable
 private fun DetectedListSection(
     videos: List<DetectedVideoUrl>,
-    totalCount: Int,
     expanded: Boolean,
     onExpandedChange: (Boolean) -> Unit,
-    filter: DetectedFilter,
-    onFilterChange: (DetectedFilter) -> Unit,
-    searchQuery: String,
-    onSearchQueryChange: (String) -> Unit,
-    selectedUrl: String?,
-    onSelect: (String) -> Unit,
-    onCopy: (String) -> Unit,
-    onDownload: () -> Unit,
-    onClear: () -> Unit,
+    onDownloadItem: (DetectedVideoUrl) -> Unit,
     modifier: Modifier = Modifier
 ) {
     Column(
@@ -694,25 +658,17 @@ private fun DetectedListSection(
                 fontSize = 14.sp
             )
             Text(
-                text = "วิดีโอ (${videos.size}/$totalCount)",
+                text = "วิดีโอ (${videos.size})",
                 style = MaterialTheme.typography.labelLarge,
                 fontWeight = FontWeight.SemiBold,
                 modifier = Modifier.weight(1f)
             )
-            TextButton(
-                onClick = onClear,
-                enabled = totalCount > 0,
-                contentPadding = ButtonDefaults.TextButtonContentPadding
-            ) {
-                Text("ล้าง", fontSize = 13.sp)
-            }
-            Button(
-                onClick = onDownload,
-                enabled = selectedUrl != null,
-                modifier = Modifier.height(32.dp),
-                contentPadding = ButtonDefaults.ContentPadding
-            ) {
-                Text("ดาวน์โหลด", fontSize = 13.sp)
+            if (videos.isNotEmpty() && !expanded) {
+                Text(
+                    text = "แตะเพื่อดาวน์โหลด",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
             }
         }
 
@@ -720,52 +676,11 @@ private fun DetectedListSection(
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .heightIn(max = 140.dp)
+                    .heightIn(max = 160.dp)
             ) {
-                OutlinedTextField(
-                    value = searchQuery,
-                    onValueChange = onSearchQueryChange,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(48.dp),
-                    singleLine = true,
-                    placeholder = { Text("ค้นหาในรายการ", fontSize = 13.sp) },
-                    textStyle = TextStyle(fontSize = 13.sp),
-                    colors = OutlinedTextFieldDefaults.colors()
-                )
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .horizontalScroll(rememberScrollState())
-                        .padding(vertical = 2.dp),
-                    horizontalArrangement = Arrangement.spacedBy(6.dp)
-                ) {
-                    DetectedFilter.entries.forEach { option ->
-                        FilterChip(
-                            selected = filter == option,
-                            onClick = { onFilterChange(option) },
-                            label = {
-                                Text(
-                                    text = when (option) {
-                                        DetectedFilter.ALL -> "ทั้งหมด"
-                                        DetectedFilter.MP4 -> "MP4"
-                                        DetectedFilter.HLS -> "HLS"
-                                        DetectedFilter.UNKNOWN -> "อื่นๆ"
-                                    },
-                                    fontSize = 12.sp
-                                )
-                            }
-                        )
-                    }
-                }
-
                 if (videos.isEmpty()) {
                     Text(
-                        text = if (totalCount == 0) {
-                            "ยังไม่พบวิดีโอ — เปิดหน้าเว็บแล้วรอ"
-                        } else {
-                            "ไม่มีรายการในตัวกรอง/คำค้นหานี้"
-                        },
+                        text = "ยังไม่พบวิดีโอ — เปิดหน้าเว็บแล้วรอ",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.padding(vertical = 4.dp)
@@ -774,15 +689,13 @@ private fun DetectedListSection(
                     LazyColumn(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .heightIn(max = 96.dp),
+                            .heightIn(max = 148.dp),
                         verticalArrangement = Arrangement.spacedBy(2.dp)
                     ) {
                         items(videos, key = { it.url }) { item ->
                             DetectedVideoRow(
                                 item = item,
-                                selected = item.url == selectedUrl,
-                                onSelect = { onSelect(item.url) },
-                                onCopy = { onCopy(item.url) }
+                                onClick = { onDownloadItem(item) }
                             )
                         }
                     }
@@ -795,22 +708,15 @@ private fun DetectedListSection(
 @Composable
 private fun DetectedVideoRow(
     item: DetectedVideoUrl,
-    selected: Boolean,
-    onSelect: () -> Unit,
-    onCopy: () -> Unit
+    onClick: () -> Unit
 ) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .selectable(
-                selected = selected,
-                onClick = onSelect,
-                role = Role.RadioButton
-            )
-            .padding(vertical = 4.dp),
+            .clickable(onClick = onClick)
+            .padding(vertical = 6.dp, horizontal = 4.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        RadioButton(selected = selected, onClick = onSelect)
         Column(modifier = Modifier.weight(1f)) {
             Text(
                 text = item.url,
@@ -818,9 +724,6 @@ private fun DetectedVideoRow(
                 overflow = TextOverflow.Ellipsis,
                 style = MaterialTheme.typography.bodySmall
             )
-        }
-        TextButton(onClick = onCopy) {
-            Text("คัดลอก")
         }
         TypeBadge(type = item.type)
     }
