@@ -3,11 +3,12 @@ package com.saha.videodownloader.download
 import android.content.Context
 import android.os.Handler
 import android.os.Looper
-import android.widget.Toast
 
 /**
  * Starts HLS→MP4 mux inside [FfmpegMuxService] (foreground) so HyperOS / Android 16
  * devices (e.g. Xiaomi 14) are less likely to kill the job in the background.
+ *
+ * Does not navigate away from the WebView — progress is shown via the FGS notification.
  */
 class FfmpegHlsDownloadStrategy(
     private val onStarted: (() -> Unit)? = null,
@@ -23,11 +24,6 @@ class FfmpegHlsDownloadStrategy(
         // Registers job in downloads list before FGS starts.
         FfmpegMuxService.start(context, url, userAgent, refererUrl)
         mainHandler.post {
-            Toast.makeText(
-                context.applicationContext,
-                "เพิ่มงาน mux แล้ว — เปิดหน้าดาวน์โหลดเพื่อดูสถานะ (หรือแถบแจ้งเตือน)",
-                Toast.LENGTH_LONG
-            ).show()
             // Service owns the long-running work; clear the button spinner promptly.
             onFinished?.invoke()
         }

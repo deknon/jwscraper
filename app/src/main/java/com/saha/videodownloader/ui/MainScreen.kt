@@ -59,8 +59,10 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
+import kotlinx.coroutines.launch
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -112,6 +114,7 @@ fun MainScreen(
     var listExpanded by remember { mutableStateOf(false) }
     var menuExpanded by remember { mutableStateOf(false) }
     val snackbarHostState = remember { SnackbarHostState() }
+    val scope = rememberCoroutineScope()
 
     val keepScreenOn = isDownloading || ffmpegJobs.any {
         it.state == LibraryDownload.State.DOWNLOADING || it.state == LibraryDownload.State.QUEUED
@@ -233,17 +236,34 @@ fun MainScreen(
                     expanded = listExpanded,
                     onExpandedChange = { listExpanded = it },
                     onDownloadItem = { item ->
+                        // Stay on the WebView — never navigate to the downloads library.
+                        listExpanded = false
                         when (item.type) {
                             VideoType.MP4 -> {
                                 viewModel.setDownloading(true)
                                 DownloadHelper.downloadMp4(context, item.url)
                                 viewModel.setDownloading(false)
+                                scope.launch {
+                                    snackbarHostState.showSnackbar(
+                                        "เริ่มดาวน์โหลดแล้ว — อยู่หน้าเว็บต่อได้"
+                                    )
+                                }
                             }
                             VideoType.HLS -> DownloadHelper.handleHlsUrl(
                                 context = context,
                                 url = item.url,
-                                onDownloadStarted = { viewModel.setDownloading(true) },
-                                onDownloadFinished = { viewModel.setDownloading(false) },
+                                onDownloadStarted = {
+                                    viewModel.setDownloading(true)
+                                    listExpanded = false
+                                },
+                                onDownloadFinished = {
+                                    viewModel.setDownloading(false)
+                                    scope.launch {
+                                        snackbarHostState.showSnackbar(
+                                            "เริ่มดาวน์โหลดแล้ว — อยู่หน้าเว็บต่อได้"
+                                        )
+                                    }
+                                },
                                 userAgent = viewModel.currentUserAgent(),
                                 refererUrl = viewModel.currentPageUrl.value
                                     ?: urlInput.takeIf {
@@ -254,6 +274,11 @@ fun MainScreen(
                                 viewModel.setDownloading(true)
                                 DownloadHelper.handleUnknownOrOther(context, item.url)
                                 viewModel.setDownloading(false)
+                                scope.launch {
+                                    snackbarHostState.showSnackbar(
+                                        "เริ่มดาวน์โหลดแล้ว — อยู่หน้าเว็บต่อได้"
+                                    )
+                                }
                             }
                         }
                     },
