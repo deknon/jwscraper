@@ -21,14 +21,17 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
@@ -73,12 +76,14 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -180,17 +185,13 @@ fun MainScreen(
         }
     }
 
+    // Put chrome in Scaffold topBar/bottomBar so WebView cannot paint over them
+    // (HyperOS / edge-to-edge bug: AndroidView WebView sometimes covered the URL row).
     Scaffold(
         modifier = modifier.fillMaxSize(),
-        snackbarHost = { SnackbarHost(snackbarHostState) }
-    ) { padding ->
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(padding)
-        ) {
+        contentWindowInsets = WindowInsets.safeDrawing,
+        topBar = {
             CompactTopChrome(
-                title = "saha Video Downloader",
                 detectedCount = detectedVideos.size,
                 urlInput = urlInput,
                 onUrlChange = { urlInput = it },
@@ -231,18 +232,68 @@ fun MainScreen(
                     viewModel.reloadPage()
                 }
             )
-
-            if (isPageLoading || isDownloading) {
-                LinearProgressIndicator(
-                    modifier = Modifier.fillMaxWidth(),
-                    color = if (isDownloading) {
-                        MaterialTheme.colorScheme.tertiary
-                    } else {
-                        MaterialTheme.colorScheme.primary
-                    }
+        },
+        bottomBar = {
+            Surface(
+                color = MaterialTheme.colorScheme.surface,
+                tonalElevation = 2.dp,
+                shadowElevation = 4.dp
+            ) {
+                DetectedListSection(
+                    videos = filteredVideos,
+                    totalCount = detectedVideos.size,
+                    expanded = listExpanded,
+                    onExpandedChange = { listExpanded = it },
+                    filter = filter,
+                    onFilterChange = { viewModel.setFilter(it) },
+                    searchQuery = searchQuery,
+                    onSearchQueryChange = { viewModel.setSearchQuery(it) },
+                    selectedUrl = selectedUrl,
+                    onSelect = { viewModel.selectUrl(it) },
+                    onCopy = { url ->
+                        val clipboard =
+                            context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                        clipboard.setPrimaryClip(ClipData.newPlainText("video-url", url))
+                        Toast.makeText(context, "คัดลอก URL แล้ว", Toast.LENGTH_SHORT).show()
+                    },
+                    onDownload = {
+                        val selected = detectedVideos.firstOrNull { it.url == selectedUrl }
+                        if (selected != null) {
+                            when (selected.type) {
+                                VideoType.MP4 -> {
+                                    viewModel.setDownloading(true)
+                                    DownloadHelper.downloadMp4(context, selected.url)
+                                    viewModel.setDownloading(false)
+                                }
+                                VideoType.HLS -> DownloadHelper.handleHlsUrl(
+                                    context = context,
+                                    url = selected.url,
+                                    onDownloadStarted = { viewModel.setDownloading(true) },
+                                    onDownloadFinished = { viewModel.setDownloading(false) },
+                                    userAgent = viewModel.currentUserAgent()
+                                )
+                                VideoType.UNKNOWN -> {
+                                    viewModel.setDownloading(true)
+                                    DownloadHelper.handleUnknownOrOther(context, selected.url)
+                                    viewModel.setDownloading(false)
+                                }
+                            }
+                        }
+                    },
+                    onClear = { viewModel.clearDetectedUrls() },
+                    modifier = Modifier.fillMaxWidth()
                 )
             }
-
+        },
+        snackbarHost = { SnackbarHost(snackbarHostState) }
+    ) { padding ->
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(padding)
+                .clipToBounds()
+                .background(MaterialTheme.colorScheme.background)
+        ) {
             VideoWebView(
                 loadUrl = webViewLoadUrl,
                 userAgent = viewModel.currentUserAgent(),
@@ -256,72 +307,52 @@ fun MainScreen(
                     }
                 },
                 modifier = Modifier
-                    .fillMaxWidth()
-                    .weight(1f)
+                    .fillMaxSize()
+                    .clipToBounds()
             )
 
-            if (showHistory) {
-                HistoryDialog(
-                    urls = recentUrls,
-                    onSelect = { selected ->
-                        showHistory = false
-                        urlInput = selected
-                        viewModel.clearDetectedUrls()
-                        viewModel.rememberUrl(selected)
-                        webViewLoadUrl = selected
-                    },
-                    onClear = {
-                        viewModel.clearHistory()
-                    },
-                    onDismiss = { showHistory = false }
+            if (webViewLoadUrl.isNullOrBlank() &&
+                (webViewRef?.url.isNullOrBlank() || webViewRef?.url == "about:blank")
+            ) {
+                Text(
+                    text = "พิมพ์ URL ด้านบน แล้วกด ไป",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    style = MaterialTheme.typography.bodyLarge,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier
+                        .align(Alignment.Center)
+                        .padding(24.dp)
                 )
             }
 
-            HorizontalDivider()
-
-            DetectedListSection(
-                videos = filteredVideos,
-                totalCount = detectedVideos.size,
-                expanded = listExpanded,
-                onExpandedChange = { listExpanded = it },
-                filter = filter,
-                onFilterChange = { viewModel.setFilter(it) },
-                searchQuery = searchQuery,
-                onSearchQueryChange = { viewModel.setSearchQuery(it) },
-                selectedUrl = selectedUrl,
-                onSelect = { viewModel.selectUrl(it) },
-                onCopy = { url ->
-                    val clipboard =
-                        context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                    clipboard.setPrimaryClip(ClipData.newPlainText("video-url", url))
-                    Toast.makeText(context, "คัดลอก URL แล้ว", Toast.LENGTH_SHORT).show()
-                },
-                onDownload = {
-                    val selected = detectedVideos.firstOrNull { it.url == selectedUrl }
-                    if (selected != null) {
-                        when (selected.type) {
-                            VideoType.MP4 -> {
-                                viewModel.setDownloading(true)
-                                DownloadHelper.downloadMp4(context, selected.url)
-                                viewModel.setDownloading(false)
-                            }
-                            VideoType.HLS -> DownloadHelper.handleHlsUrl(
-                                context = context,
-                                url = selected.url,
-                                onDownloadStarted = { viewModel.setDownloading(true) },
-                                onDownloadFinished = { viewModel.setDownloading(false) },
-                                userAgent = viewModel.currentUserAgent()
-                            )
-                            VideoType.UNKNOWN -> {
-                                viewModel.setDownloading(true)
-                                DownloadHelper.handleUnknownOrOther(context, selected.url)
-                                viewModel.setDownloading(false)
-                            }
-                        }
+            if (isPageLoading || isDownloading) {
+                LinearProgressIndicator(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .align(Alignment.TopCenter),
+                    color = if (isDownloading) {
+                        MaterialTheme.colorScheme.tertiary
+                    } else {
+                        MaterialTheme.colorScheme.primary
                     }
+                )
+            }
+        }
+
+        if (showHistory) {
+            HistoryDialog(
+                urls = recentUrls,
+                onSelect = { selected ->
+                    showHistory = false
+                    urlInput = selected
+                    viewModel.clearDetectedUrls()
+                    viewModel.rememberUrl(selected)
+                    webViewLoadUrl = selected
                 },
-                onClear = { viewModel.clearDetectedUrls() },
-                modifier = Modifier.fillMaxWidth()
+                onClear = {
+                    viewModel.clearHistory()
+                },
+                onDismiss = { showHistory = false }
             )
         }
     }
@@ -329,7 +360,6 @@ fun MainScreen(
 
 @Composable
 private fun CompactTopChrome(
-    title: String,
     detectedCount: Int,
     urlInput: String,
     onUrlChange: (String) -> Unit,
@@ -346,114 +376,108 @@ private fun CompactTopChrome(
     onClearSiteData: () -> Unit,
     modifier: Modifier = Modifier
 ) {
+    // Single compact row — stays in Scaffold topBar so status-bar insets apply
+    // and WebView cannot cover the URL field.
     Surface(
         modifier = modifier.fillMaxWidth(),
         color = MaterialTheme.colorScheme.primaryContainer,
-        tonalElevation = 2.dp
+        tonalElevation = 3.dp,
+        shadowElevation = 2.dp
     ) {
-        Column(
+        Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 8.dp, vertical = 4.dp)
+                .heightIn(min = 48.dp)
+                .padding(horizontal = 4.dp, vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(2.dp)
         ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically
+            TextButton(
+                onClick = onBack,
+                enabled = canGoBack,
+                modifier = Modifier.size(width = 36.dp, height = 36.dp),
+                contentPadding = ButtonDefaults.TextButtonContentPadding
             ) {
-                BadgedBox(
-                    badge = {
-                        if (detectedCount > 0) {
-                            Badge { Text("$detectedCount") }
-                        }
+                Text("←", fontSize = 18.sp, color = MaterialTheme.colorScheme.onPrimaryContainer)
+            }
+
+            CompactUrlField(
+                value = urlInput,
+                onValueChange = onUrlChange,
+                onGo = onGo,
+                modifier = Modifier
+                    .weight(1f)
+                    .height(36.dp)
+            )
+
+            Button(
+                onClick = onGo,
+                modifier = Modifier.height(36.dp),
+                contentPadding = ButtonDefaults.ContentPadding
+            ) {
+                Text("ไป", fontSize = 13.sp)
+            }
+
+            BadgedBox(
+                badge = {
+                    if (detectedCount > 0) {
+                        Badge { Text("$detectedCount") }
                     }
-                ) {
-                    Text(
-                        text = title,
-                        style = MaterialTheme.typography.labelLarge,
-                        fontWeight = FontWeight.SemiBold,
-                        color = MaterialTheme.colorScheme.onPrimaryContainer,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
                 }
-                Spacer(modifier = Modifier.weight(1f))
+            ) {
                 TextButton(
                     onClick = onOpenDownloads,
                     contentPadding = ButtonDefaults.TextButtonContentPadding
                 ) {
-                    Text("ดาวน์โหลด", fontSize = 13.sp)
+                    Text(
+                        "รายการ",
+                        fontSize = 12.sp,
+                        maxLines = 1,
+                        color = MaterialTheme.colorScheme.onPrimaryContainer
+                    )
                 }
             }
 
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(bottom = 4.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(4.dp)
+            TextButton(
+                onClick = { onMenuExpandedChange(true) },
+                modifier = Modifier.size(width = 36.dp, height = 36.dp),
+                contentPadding = ButtonDefaults.TextButtonContentPadding
             ) {
-                TextButton(
-                    onClick = onBack,
-                    enabled = canGoBack,
-                    modifier = Modifier.size(width = 40.dp, height = 36.dp),
-                    contentPadding = ButtonDefaults.TextButtonContentPadding
-                ) {
-                    Text("←", fontSize = 18.sp)
-                }
+                Text("⋮", fontSize = 20.sp, color = MaterialTheme.colorScheme.onPrimaryContainer)
+            }
 
-                CompactUrlField(
-                    value = urlInput,
-                    onValueChange = onUrlChange,
-                    onGo = onGo,
-                    modifier = Modifier
-                        .weight(1f)
-                        .height(36.dp)
+            DropdownMenu(
+                expanded = menuExpanded,
+                onDismissRequest = { onMenuExpandedChange(false) }
+            ) {
+                DropdownMenuItem(
+                    text = { Text("saha Video Downloader", fontWeight = FontWeight.SemiBold) },
+                    onClick = { onMenuExpandedChange(false) },
+                    enabled = false
                 )
-
-                Button(
-                    onClick = onGo,
-                    modifier = Modifier.height(36.dp),
-                    contentPadding = ButtonDefaults.ContentPadding
-                ) {
-                    Text("ไป", fontSize = 13.sp)
-                }
-
-                TextButton(
-                    onClick = { onMenuExpandedChange(true) },
-                    modifier = Modifier.size(width = 40.dp, height = 36.dp),
-                    contentPadding = ButtonDefaults.TextButtonContentPadding
-                ) {
-                    Text("⋮", fontSize = 20.sp)
-                }
-
-                DropdownMenu(
-                    expanded = menuExpanded,
-                    onDismissRequest = { onMenuExpandedChange(false) }
-                ) {
-                    DropdownMenuItem(
-                        text = { Text("ประวัติ URL") },
-                        onClick = onHistory
-                    )
-                    DropdownMenuItem(
-                        text = { Text("รีเฟรช") },
-                        onClick = onReload
-                    )
-                    DropdownMenuItem(
-                        text = {
-                            Text(
-                                if (useDesktopUa) "ใช้ Mobile site" else "ใช้ Desktop site"
-                            )
-                        },
-                        onClick = {
-                            onMenuExpandedChange(false)
-                            onToggleDesktopUa()
-                        }
-                    )
-                    DropdownMenuItem(
-                        text = { Text("ล้างข้อมูลไซต์") },
-                        onClick = onClearSiteData
-                    )
-                }
+                DropdownMenuItem(
+                    text = { Text("ประวัติ URL") },
+                    onClick = onHistory
+                )
+                DropdownMenuItem(
+                    text = { Text("รีเฟรช") },
+                    onClick = onReload
+                )
+                DropdownMenuItem(
+                    text = {
+                        Text(
+                            if (useDesktopUa) "ใช้ Mobile site" else "ใช้ Desktop site"
+                        )
+                    },
+                    onClick = {
+                        onMenuExpandedChange(false)
+                        onToggleDesktopUa()
+                    }
+                )
+                DropdownMenuItem(
+                    text = { Text("ล้างข้อมูลไซต์") },
+                    onClick = onClearSiteData
+                )
             }
         }
     }
@@ -557,13 +581,15 @@ private fun VideoWebView(
     var appliedReloadToken by remember { mutableStateOf(reloadToken) }
 
     AndroidView(
-        modifier = modifier,
+        modifier = modifier.clipToBounds(),
         factory = { context ->
             WebView(context).apply {
                 layoutParams = ViewGroup.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT,
                     ViewGroup.LayoutParams.MATCH_PARENT
                 )
+                // Prevent WebView from drawing outside its Compose slot on HyperOS.
+                setBackgroundColor(android.graphics.Color.WHITE)
                 settings.javaScriptEnabled = true
                 settings.domStorageEnabled = true
                 settings.mediaPlaybackRequiresUserGesture = false
@@ -638,14 +664,15 @@ private fun DetectedListSection(
     Column(
         modifier = modifier
             .background(MaterialTheme.colorScheme.surface)
-            .padding(horizontal = 8.dp, vertical = 4.dp)
+            .padding(horizontal = 8.dp, vertical = 2.dp)
     ) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
+                .heightIn(min = 40.dp)
                 .clip(RoundedCornerShape(8.dp))
                 .clickable { onExpandedChange(!expanded) }
-                .padding(horizontal = 4.dp, vertical = 2.dp),
+                .padding(horizontal = 4.dp, vertical = 0.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             Text(
@@ -680,7 +707,7 @@ private fun DetectedListSection(
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .heightIn(max = 168.dp)
+                    .heightIn(max = 140.dp)
             ) {
                 OutlinedTextField(
                     value = searchQuery,
