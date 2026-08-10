@@ -73,6 +73,15 @@ class VideoDownloaderViewModel(application: Application) : AndroidViewModel(appl
     private val _reloadToken = MutableStateFlow(0)
     val reloadToken: StateFlow<Int> = _reloadToken.asStateFlow()
 
+    /** Last non-blank page URL loaded in the WebView — used as Referer for CDN auth. */
+    private val _currentPageUrl = MutableStateFlow<String?>(null)
+    val currentPageUrl: StateFlow<String?> = _currentPageUrl.asStateFlow()
+
+    fun setCurrentPageUrl(url: String?) {
+        if (url.isNullOrBlank() || url == "about:blank") return
+        _currentPageUrl.value = url
+    }
+
     /**
      * Called from [com.saha.videodownloader.webview.VideoInterceptingWebViewClient]
      * callbacks (may be off the UI thread). Uses atomic [MutableStateFlow.update]

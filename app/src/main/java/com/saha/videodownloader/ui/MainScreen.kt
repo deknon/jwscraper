@@ -91,6 +91,7 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.saha.videodownloader.download.DownloadHelper
 import com.saha.videodownloader.download.FfmpegJobTracker
+import com.saha.videodownloader.download.WebViewCookieHelper
 import com.saha.videodownloader.model.DetectedVideoUrl
 import com.saha.videodownloader.model.LibraryDownload
 import com.saha.videodownloader.model.VideoType
@@ -270,7 +271,11 @@ fun MainScreen(
                                     url = selected.url,
                                     onDownloadStarted = { viewModel.setDownloading(true) },
                                     onDownloadFinished = { viewModel.setDownloading(false) },
-                                    userAgent = viewModel.currentUserAgent()
+                                    userAgent = viewModel.currentUserAgent(),
+                                    refererUrl = viewModel.currentPageUrl.value
+                                        ?: urlInput.takeIf {
+                                            it.startsWith("http://") || it.startsWith("https://")
+                                        }
                                 )
                                 VideoType.UNKNOWN -> {
                                     viewModel.setDownloading(true)
@@ -304,6 +309,7 @@ fun MainScreen(
                 onUrlChanged = { current ->
                     if (!current.isNullOrBlank() && current != "about:blank") {
                         urlInput = current
+                        viewModel.setCurrentPageUrl(current)
                     }
                 },
                 modifier = Modifier
@@ -598,6 +604,8 @@ private fun VideoWebView(
                 settings.cacheMode = WebSettings.LOAD_DEFAULT
                 settings.loadWithOverviewMode = true
                 settings.useWideViewPort = true
+                // CDN / JW Player auth cookies are often third-party.
+                WebViewCookieHelper.enableFor(this)
 
                 webViewClient = object : VideoInterceptingWebViewClient(
                     onVideoUrlDetected = { url, type ->
@@ -613,6 +621,7 @@ private fun VideoWebView(
 
                     override fun onPageFinished(view: WebView?, url: String?) {
                         super.onPageFinished(view, url)
+                        WebViewCookieHelper.flush()
                         latestViewModel.setPageLoading(false)
                         latestUrlChanged(url)
                         latestCanGoBack(view?.canGoBack() == true)

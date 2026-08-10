@@ -9,7 +9,6 @@ import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
 import android.util.Log
-import android.webkit.CookieManager
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.app.ServiceCompat
@@ -72,16 +71,29 @@ class FfmpegMuxService : Service() {
                     ?: "hls_${System.currentTimeMillis()}.mp4"
                 val userAgent = intent.getStringExtra(EXTRA_USER_AGENT)
                     ?: DownloadHelper.MOBILE_CHROME_UA
+                val refererUrl = intent.getStringExtra(EXTRA_REFERER_URL)
                 if (FfmpegJobTracker.get(jobId) == null) {
-                    FfmpegJobTracker.start(jobId, filename, url)
+                    FfmpegJobTracker.start(
+                        id = jobId,
+                        title = filename,
+                        sourceUrl = url,
+                        refererUrl = refererUrl,
+                        userAgent = userAgent
+                    )
                 }
-                startMux(jobId, url, filename, userAgent)
+                startMux(jobId, url, filename, userAgent, refererUrl)
             }
         }
         return START_NOT_STICKY
     }
 
-    private fun startMux(jobId: String, url: String, filename: String, userAgent: String) {
+    private fun startMux(
+        jobId: String,
+        url: String,
+        filename: String,
+        userAgent: String,
+        refererUrl: String?
+    ) {
         try {
             VideoDownloadService.ensureChannel(this)
             val notification = buildNotification(jobId, filename, 0, "เริ่ม mux…")
@@ -120,7 +132,14 @@ class FfmpegMuxService : Service() {
         val outputFile = File(workDir, filename)
         if (outputFile.exists()) outputFile.delete()
 
-        val httpHeaders = buildHttpHeaders(url, userAgent)
+        WebViewCookieHelper.flush()
+        val httpHeaders = WebViewCookieHelper.buildFfmpegHeaders(url, refererUrl, userAgent)
+        val resolvedReferer = WebViewCookieHelper.resolveReferer(url, refererUrl)
+        Log.i(
+            TAG,
+            "mux headers referer=$resolvedReferer cookie=" +
+                (httpHeaders.contains("Cookie:")).toString()
+        )
         val durationMs = AtomicLong(0L)
         runCatching {
             // Best-effort duration for progress; mux does not wait on probe.
@@ -130,7 +149,13 @@ class FfmpegMuxService : Service() {
             }
         }
 
-        val strategies = buildMuxStrategies(url, userAgent, httpHeaders, outputFile.absolutePath)
+        val strategies = buildMuxStrategies(
+            url = url,
+            userAgent = userAgent,
+            headers = httpHeaders,
+            referer = resolvedReferer,
+            outputPath = outputFile.absolutePath
+        )
         runMuxAttempt(
             jobId = jobId,
             url = url,
@@ -214,6 +239,11 @@ class FfmpegMuxService : Service() {
                             else -> {
                                 val err = extractFfmpegError(completed)
                                 Log.w(TAG, "mux attempt ${attemptIndex + 1} failed: $err")
+                                val hint = if (err.contains("403") || err.contains("Forbidden", true)) {
+                                    " — เซิร์ฟเวอร์ปฏิเสธ (ลองเปิดหน้าเว็บให้เล่นวิดีโอก่อน แล้วดาวน์โหลดใหม่)"
+                                } else {
+                                    ""
+                                }
                                 runMuxAttempt(
                                     jobId = jobId,
                                     url = url,
@@ -222,7 +252,7 @@ class FfmpegMuxService : Service() {
                                     durationMs = durationMs,
                                     strategies = strategies,
                                     attemptIndex = attemptIndex + 1,
-                                    lastError = "ffmpeg ล้มเหลว (rc=${completed.returnCode}): $err"
+                                    lastError = "ffmpeg ล้มเหลว (rc=${completed.returnCode}): $err$hint"
                                 )
                             }
                         }
@@ -350,21 +380,35 @@ class FfmpegMuxService : Service() {
         const val EXTRA_JOB_ID = "extra_job_id"
         const val EXTRA_FILENAME = "extra_filename"
         const val EXTRA_USER_AGENT = "extra_user_agent"
+        const val EXTRA_REFERER_URL = "extra_referer_url"
         private const val NOTIFICATION_ID = 42
 
-        fun start(context: Context, url: String, userAgent: String? = null): String {
+        fun start(
+            context: Context,
+            url: String,
+            userAgent: String? = null,
+            refererUrl: String? = null
+        ): String {
             val appContext = context.applicationContext
             FfmpegJobTracker.init(appContext)
             val filename = buildFilename(url)
             val jobId = "ffmpeg-job:${UUID.randomUUID()}"
-            FfmpegJobTracker.start(jobId, filename, url)
+            val ua = userAgent ?: DownloadHelper.MOBILE_CHROME_UA
+            FfmpegJobTracker.start(
+                id = jobId,
+                title = filename,
+                sourceUrl = url,
+                refererUrl = refererUrl,
+                userAgent = ua
+            )
 
             val intent = Intent(appContext, FfmpegMuxService::class.java).apply {
                 action = ACTION_START
                 putExtra(EXTRA_URL, url)
                 putExtra(EXTRA_JOB_ID, jobId)
                 putExtra(EXTRA_FILENAME, filename)
-                putExtra(EXTRA_USER_AGENT, userAgent ?: DownloadHelper.MOBILE_CHROME_UA)
+                putExtra(EXTRA_USER_AGENT, ua)
+                putExtra(EXTRA_REFERER_URL, refererUrl)
             }
             try {
                 ContextCompat.startForegroundService(appContext, intent)
@@ -388,74 +432,78 @@ class FfmpegMuxService : Service() {
             return "${sanitized}_${System.currentTimeMillis()}.mp4"
         }
 
-        private fun buildHttpHeaders(url: String, userAgent: String): String {
-            val referer = try {
-                val uri = URI(url)
-                val host = uri.host
-                if (host.isNullOrBlank()) {
-                    null
-                } else {
-                    val scheme = uri.scheme ?: "https"
-                    "$scheme://$host/"
-                }
-            } catch (_: Exception) {
-                null
-            }
-            val cookie = runCatching { CookieManager.getInstance().getCookie(url) }
-                .getOrNull()
-                ?.takeIf { it.isNotBlank() }
-
-            val lines = buildList {
-                add("User-Agent: $userAgent")
-                if (!referer.isNullOrBlank()) add("Referer: $referer")
-                add("Accept: */*")
-                if (!cookie.isNullOrBlank()) add("Cookie: $cookie")
-            }
-            // ffmpeg -headers requires CRLF between entries and a trailing CRLF.
-            return lines.joinToString("\r\n", postfix = "\r\n")
-        }
-
         private fun buildMuxStrategies(
             url: String,
             userAgent: String,
             headers: String,
+            referer: String,
             outputPath: String
         ): List<MuxStrategy> {
-            val commonPrefix = arrayOf(
-                "-y",
-                "-user_agent", userAgent,
-                "-headers", headers,
-                "-allowed_extensions", "ALL",
-                "-protocol_whitelist", "file,http,https,tcp,tls,crypto,data,pipe",
-                "-reconnect", "1",
-                "-reconnect_streamed", "1",
-                "-reconnect_delay_max", "5",
-                "-i", url
-            )
+            fun prefix(extraHeaders: String? = null): Array<String> {
+                val hdr = extraHeaders ?: headers
+                return arrayOf(
+                    "-y",
+                    "-user_agent", userAgent,
+                    "-referer", referer,
+                    "-headers", hdr,
+                    "-allowed_extensions", "ALL",
+                    "-protocol_whitelist", "file,http,https,tcp,tls,crypto,data,pipe",
+                    "-reconnect", "1",
+                    "-reconnect_streamed", "1",
+                    "-reconnect_delay_max", "5",
+                    "-i", url
+                )
+            }
+            // Host-only referer fallback (some CDNs reject deep page paths).
+            val hostReferer = try {
+                val uri = URI(referer)
+                val host = uri.host
+                if (host.isNullOrBlank()) referer else "${uri.scheme ?: "https"}://$host/"
+            } catch (_: Exception) {
+                referer
+            }
+            val hostHeaders = WebViewCookieHelper.buildFfmpegHeaders(url, hostReferer, userAgent)
+
             return listOf(
-                // Most HLS/TS audio needs ADTS→ASC when remuxing to MP4.
                 MuxStrategy(
                     label = "copy+aac_bsf",
-                    args = commonPrefix + arrayOf(
+                    args = prefix() + arrayOf(
                         "-c", "copy",
                         "-bsf:a", "aac_adtstoasc",
                         "-movflags", "+faststart",
                         outputPath
                     )
                 ),
-                // Fails when there is no ADTS AAC (already fragmented MP4 / no audio).
                 MuxStrategy(
                     label = "copy",
-                    args = commonPrefix + arrayOf(
+                    args = prefix() + arrayOf(
                         "-c", "copy",
                         "-movflags", "+faststart",
                         outputPath
                     )
                 ),
-                // Last resort: re-encode audio so MP4 mux can succeed.
+                MuxStrategy(
+                    label = "host-referer",
+                    args = arrayOf(
+                        "-y",
+                        "-user_agent", userAgent,
+                        "-referer", hostReferer,
+                        "-headers", hostHeaders,
+                        "-allowed_extensions", "ALL",
+                        "-protocol_whitelist", "file,http,https,tcp,tls,crypto,data,pipe",
+                        "-reconnect", "1",
+                        "-reconnect_streamed", "1",
+                        "-reconnect_delay_max", "5",
+                        "-i", url,
+                        "-c", "copy",
+                        "-bsf:a", "aac_adtstoasc",
+                        "-movflags", "+faststart",
+                        outputPath
+                    )
+                ),
                 MuxStrategy(
                     label = "copyV+aac",
-                    args = commonPrefix + arrayOf(
+                    args = prefix() + arrayOf(
                         "-c:v", "copy",
                         "-c:a", "aac",
                         "-b:a", "128k",
