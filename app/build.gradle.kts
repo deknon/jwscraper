@@ -56,6 +56,11 @@ dependencies {
     implementation(libs.androidx.activity.compose)
     implementation(libs.androidx.webkit)
     implementation(libs.google.material)
+    implementation(libs.androidx.media3.exoplayer)
+    implementation(libs.androidx.media3.exoplayer.hls)
+    implementation(libs.androidx.media3.database)
+    implementation(libs.androidx.media3.datasource)
+    implementation(libs.androidx.media3.common)
 
     implementation(platform(libs.androidx.compose.bom))
     implementation(libs.androidx.ui)

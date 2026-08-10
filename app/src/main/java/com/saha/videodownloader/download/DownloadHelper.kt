@@ -11,7 +11,7 @@ import java.net.URI
 
 object DownloadHelper {
 
-    private val hlsStrategy: HlsDownloadStrategy = NotImplementedHlsStrategy()
+    private val hlsStrategy: HlsDownloadStrategy = Media3HlsDownloadStrategy()
 
     /**
      * Enqueues an MP4 download via [DownloadManager].
@@ -45,23 +45,26 @@ object DownloadHelper {
     }
 
     /**
-     * Explains that HLS needs segment muxing, then delegates to [HlsDownloadStrategy] stub.
+     * Explains HLS offline caching via Media3, then starts [HlsDownloadStrategy].
      */
     fun handleHlsUrl(context: Context, url: String) {
         AlertDialog.Builder(context)
             .setTitle("HLS (.m3u8)")
             .setMessage(
-                "URL นี้เป็น HLS playlist — ต้องรวมหลาย segment ก่อนได้ไฟล์วิดีโอเดียว\n\n" +
-                    "เวอร์ชันนี้ดักจับ URL ได้เท่านั้น ยังไม่ดาวน์โหลด/รวม segment จริง"
+                "URL นี้เป็น HLS playlist\n\n" +
+                    "จะดาวน์โหลด segment เข้า Media3 offline cache " +
+                    "(เล่นออฟไลน์ผ่าน ExoPlayer ได้) — " +
+                    "ยังไม่ mux เป็นไฟล์ .mp4 เดี่ยว\n\n" +
+                    "ต้องการเริ่มดาวน์โหลดหรือไม่?"
             )
-            .setPositiveButton("ตกลง") { dialog, _ ->
+            .setPositiveButton("ดาวน์โหลด") { dialog, _ ->
                 dialog.dismiss()
                 try {
                     hlsStrategy.download(url, context)
-                } catch (e: UnsupportedOperationException) {
+                } catch (e: Exception) {
                     Toast.makeText(
                         context,
-                        e.message ?: "HLS ยังไม่รองรับ",
+                        e.message ?: "HLS ดาวน์โหลดไม่สำเร็จ",
                         Toast.LENGTH_LONG
                     ).show()
                 }
