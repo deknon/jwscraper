@@ -26,11 +26,13 @@ import androidx.compose.ui.Modifier
 import androidx.core.content.ContextCompat
 import androidx.core.util.Consumer
 import com.saha.videodownloader.download.FfmpegJobTracker
+import com.saha.videodownloader.download.FfmpegKitLoader
 import com.saha.videodownloader.ui.DownloadsScreen
 import com.saha.videodownloader.ui.MainScreen
 import com.saha.videodownloader.ui.theme.SahaVideoDownloaderTheme
 import com.saha.videodownloader.viewmodel.DownloadsViewModel
 import com.saha.videodownloader.viewmodel.VideoDownloaderViewModel
+import java.util.concurrent.Executors
 
 class MainActivity : ComponentActivity() {
 
@@ -43,6 +45,10 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         FfmpegJobTracker.init(this)
+        // Warm native ffmpeg off the UI thread so the first mux is less likely to stall.
+        Executors.newSingleThreadExecutor().execute {
+            FfmpegKitLoader.ensureReady()
+        }
         requestNotificationPermissionIfNeeded()
         handleIncomingIntent(intent, showFeedback = true)
         enableEdgeToEdge()

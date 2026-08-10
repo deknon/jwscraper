@@ -139,6 +139,7 @@ fun DownloadsScreen(
                                 }
                             },
                             onCancel = { viewModel.cancelFfmpeg(item) },
+                            onRetry = { viewModel.retryFfmpeg(item) },
                             onRemove = { viewModel.remove(item) }
                         )
                         HorizontalDivider()
@@ -156,6 +157,7 @@ private fun DownloadRow(
     onOpen: () -> Unit,
     onShare: () -> Unit,
     onCancel: () -> Unit,
+    onRetry: () -> Unit,
     onRemove: () -> Unit
 ) {
     val isActiveJob = item.id.startsWith("ffmpeg-job:") &&
@@ -243,6 +245,9 @@ private fun DownloadRow(
                 }
             }
             if (item.state == LibraryDownload.State.FAILED && item.id.startsWith("ffmpeg-job:")) {
+                Button(onClick = onRetry) {
+                    Text("ลองใหม่")
+                }
                 OutlinedButton(onClick = onRemove) {
                     Text("ปิด")
                 }
