@@ -1,7 +1,10 @@
 package com.saha.videodownloader.viewmodel
 
-import androidx.lifecycle.ViewModel
+import android.app.Application
+import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.saha.videodownloader.download.DownloadHelper
+import com.saha.videodownloader.download.UrlHistoryStore
 import com.saha.videodownloader.model.DetectedVideoUrl
 import com.saha.videodownloader.model.VideoType
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -19,8 +22,9 @@ enum class DetectedFilter {
     UNKNOWN
 }
 
-class VideoDownloaderViewModel : ViewModel() {
+class VideoDownloaderViewModel(application: Application) : AndroidViewModel(application) {
 
+    private val historyStore = UrlHistoryStore(application)
     private val seenUrls = synchronizedSetOf<String>()
 
     private val _detectedVideos = MutableStateFlow<List<DetectedVideoUrl>>(emptyList())
@@ -50,6 +54,15 @@ class VideoDownloaderViewModel : ViewModel() {
 
     private val _pendingNavigateUrl = MutableStateFlow<String?>(null)
     val pendingNavigateUrl: StateFlow<String?> = _pendingNavigateUrl.asStateFlow()
+
+    private val _recentUrls = MutableStateFlow(historyStore.getAll())
+    val recentUrls: StateFlow<List<String>> = _recentUrls.asStateFlow()
+
+    private val _useDesktopUa = MutableStateFlow(false)
+    val useDesktopUa: StateFlow<Boolean> = _useDesktopUa.asStateFlow()
+
+    private val _reloadToken = MutableStateFlow(0)
+    val reloadToken: StateFlow<Int> = _reloadToken.asStateFlow()
 
     /**
      * Called from [com.saha.videodownloader.webview.VideoInterceptingWebViewClient]
@@ -107,12 +120,36 @@ class VideoDownloaderViewModel : ViewModel() {
     }
 
     fun requestNavigate(url: String) {
+        rememberUrl(url)
         _pendingNavigateUrl.value = url
     }
 
     fun consumeNavigateRequest() {
         _pendingNavigateUrl.value = null
     }
+
+    fun rememberUrl(url: String) {
+        historyStore.add(url)
+        _recentUrls.value = historyStore.getAll()
+    }
+
+    fun clearHistory() {
+        historyStore.clear()
+        _recentUrls.value = emptyList()
+    }
+
+    fun setUseDesktopUa(enabled: Boolean) {
+        if (_useDesktopUa.value == enabled) return
+        _useDesktopUa.value = enabled
+        _reloadToken.update { it + 1 }
+    }
+
+    fun reloadPage() {
+        _reloadToken.update { it + 1 }
+    }
+
+    fun currentUserAgent(): String =
+        if (_useDesktopUa.value) DownloadHelper.DESKTOP_CHROME_UA else DownloadHelper.MOBILE_CHROME_UA
 
     private fun <T> synchronizedSetOf(): MutableSet<T> =
         java.util.Collections.synchronizedSet(mutableSetOf())

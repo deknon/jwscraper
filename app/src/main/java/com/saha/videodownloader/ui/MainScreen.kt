@@ -28,6 +28,7 @@ import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Badge
 import androidx.compose.material3.BadgedBox
@@ -43,6 +44,7 @@ import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -87,11 +89,15 @@ fun MainScreen(
     val isDownloading by viewModel.isDownloading.collectAsStateWithLifecycle()
     val selectedUrl by viewModel.selectedUrl.collectAsStateWithLifecycle()
     val pendingNavigateUrl by viewModel.pendingNavigateUrl.collectAsStateWithLifecycle()
+    val recentUrls by viewModel.recentUrls.collectAsStateWithLifecycle()
+    val useDesktopUa by viewModel.useDesktopUa.collectAsStateWithLifecycle()
+    val reloadToken by viewModel.reloadToken.collectAsStateWithLifecycle()
 
     var urlInput by remember { mutableStateOf(initialUrl?.takeIf { it.isNotBlank() } ?: "https://") }
     var webViewLoadUrl by remember { mutableStateOf<String?>(null) }
     var webViewRef by remember { mutableStateOf<WebView?>(null) }
     var canGoBack by remember { mutableStateOf(false) }
+    var showHistory by remember { mutableStateOf(false) }
     val snackbarHostState = remember { SnackbarHostState() }
 
     LaunchedEffect(initialUrl) {
@@ -99,6 +105,7 @@ fun MainScreen(
         val normalized = normalizeUrl(seed)
         urlInput = normalized
         viewModel.clearDetectedUrls()
+        viewModel.rememberUrl(normalized)
         webViewLoadUrl = normalized
     }
 
@@ -107,6 +114,7 @@ fun MainScreen(
         val normalized = normalizeUrl(target)
         urlInput = normalized
         viewModel.clearDetectedUrls()
+        viewModel.rememberUrl(normalized)
         webViewLoadUrl = normalized
         viewModel.consumeNavigateRequest()
     }
@@ -177,16 +185,36 @@ fun MainScreen(
                         }
                     }
                 },
+                onHistory = { showHistory = true },
+                onReload = { viewModel.reloadPage() },
                 onGo = {
                     val normalized = normalizeUrl(urlInput)
                     urlInput = normalized
                     viewModel.clearDetectedUrls()
+                    viewModel.rememberUrl(normalized)
                     webViewLoadUrl = normalized
                 },
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 12.dp, vertical = 8.dp)
             )
+
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Text(
+                    text = if (useDesktopUa) "Desktop site" else "Mobile site",
+                    style = MaterialTheme.typography.labelLarge
+                )
+                Switch(
+                    checked = useDesktopUa,
+                    onCheckedChange = { viewModel.setUseDesktopUa(it) }
+                )
+            }
 
             if (isPageLoading) {
                 LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
@@ -205,6 +233,8 @@ fun MainScreen(
 
             VideoWebView(
                 loadUrl = webViewLoadUrl,
+                userAgent = viewModel.currentUserAgent(),
+                reloadToken = reloadToken,
                 viewModel = viewModel,
                 onWebViewReady = { webViewRef = it },
                 onCanGoBackChanged = { canGoBack = it },
@@ -217,6 +247,23 @@ fun MainScreen(
                     .fillMaxWidth()
                     .weight(1f)
             )
+
+            if (showHistory) {
+                HistoryDialog(
+                    urls = recentUrls,
+                    onSelect = { selected ->
+                        showHistory = false
+                        urlInput = selected
+                        viewModel.clearDetectedUrls()
+                        viewModel.rememberUrl(selected)
+                        webViewLoadUrl = selected
+                    },
+                    onClear = {
+                        viewModel.clearHistory()
+                    },
+                    onDismiss = { showHistory = false }
+                )
+            }
 
             HorizontalDivider()
 
@@ -272,40 +319,93 @@ private fun UrlBar(
     onUrlChange: (String) -> Unit,
     canGoBack: Boolean,
     onBack: () -> Unit,
+    onHistory: () -> Unit,
+    onReload: () -> Unit,
     onGo: () -> Unit,
     modifier: Modifier = Modifier
 ) {
-    Row(
-        modifier = modifier,
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        OutlinedButton(
-            onClick = onBack,
-            enabled = canGoBack
-        ) {
-            Text("←")
+    Column(modifier = modifier) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            OutlinedButton(
+                onClick = onBack,
+                enabled = canGoBack
+            ) {
+                Text("←")
+            }
+            Spacer(modifier = Modifier.width(8.dp))
+            OutlinedTextField(
+                value = urlInput,
+                onValueChange = onUrlChange,
+                modifier = Modifier.weight(1f),
+                singleLine = true,
+                label = { Text("URL") },
+                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Go),
+                keyboardActions = KeyboardActions(onGo = { onGo() })
+            )
+            Spacer(modifier = Modifier.width(8.dp))
+            Button(onClick = onGo) {
+                Text("ไป")
+            }
         }
-        Spacer(modifier = Modifier.width(8.dp))
-        OutlinedTextField(
-            value = urlInput,
-            onValueChange = onUrlChange,
-            modifier = Modifier.weight(1f),
-            singleLine = true,
-            label = { Text("URL") },
-            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Go),
-            keyboardActions = KeyboardActions(onGo = { onGo() })
-        )
-        Spacer(modifier = Modifier.width(8.dp))
-        Button(onClick = onGo) {
-            Text("ไป")
+        Spacer(modifier = Modifier.height(4.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedButton(onClick = onHistory) {
+                Text("ประวัติ")
+            }
+            OutlinedButton(onClick = onReload) {
+                Text("รีเฟรช")
+            }
         }
     }
+}
+
+@Composable
+private fun HistoryDialog(
+    urls: List<String>,
+    onSelect: (String) -> Unit,
+    onClear: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("ประวัติ URL") },
+        text = {
+            if (urls.isEmpty()) {
+                Text("ยังไม่มีประวัติ")
+            } else {
+                LazyColumn(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    items(urls) { url ->
+                        TextButton(onClick = { onSelect(url) }) {
+                            Text(
+                                text = url,
+                                maxLines = 2,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) { Text("ปิด") }
+        },
+        dismissButton = {
+            TextButton(
+                onClick = onClear,
+                enabled = urls.isNotEmpty()
+            ) {
+                Text("ล้างประวัติ")
+            }
+        }
+    )
 }
 
 @SuppressLint("SetJavaScriptEnabled")
 @Composable
 private fun VideoWebView(
     loadUrl: String?,
+    userAgent: String,
+    reloadToken: Int,
     viewModel: VideoDownloaderViewModel,
     onWebViewReady: (WebView) -> Unit,
     onCanGoBackChanged: (Boolean) -> Unit,
@@ -315,6 +415,7 @@ private fun VideoWebView(
     val latestViewModel by rememberUpdatedState(viewModel)
     val latestCanGoBack by rememberUpdatedState(onCanGoBackChanged)
     val latestUrlChanged by rememberUpdatedState(onUrlChanged)
+    var appliedReloadToken by remember { mutableStateOf(reloadToken) }
 
     AndroidView(
         modifier = modifier,
@@ -328,7 +429,7 @@ private fun VideoWebView(
                 settings.domStorageEnabled = true
                 settings.mediaPlaybackRequiresUserGesture = false
                 settings.mixedContentMode = WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE
-                settings.userAgentString = DownloadHelper.MOBILE_CHROME_UA
+                settings.userAgentString = userAgent
                 settings.cacheMode = WebSettings.LOAD_DEFAULT
                 settings.loadWithOverviewMode = true
                 settings.useWideViewPort = true
@@ -359,9 +460,19 @@ private fun VideoWebView(
         },
         update = { webView ->
             onWebViewReady(webView)
+            if (webView.settings.userAgentString != userAgent) {
+                webView.settings.userAgentString = userAgent
+            }
             val target = loadUrl
             if (target != null && webView.url != target) {
                 webView.loadUrl(target)
+            } else if (reloadToken != appliedReloadToken) {
+                appliedReloadToken = reloadToken
+                if (!webView.url.isNullOrBlank()) {
+                    webView.reload()
+                } else if (target != null) {
+                    webView.loadUrl(target)
+                }
             }
             onCanGoBackChanged(webView.canGoBack())
         }
