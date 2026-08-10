@@ -68,9 +68,14 @@ object HlsOfflineBundler {
                 onProgress(done, total)
                 return@forEach
             }
-            val ext = guessExt(url)
-            val local = File(segDir, "p${urlToLocal.size.toString().padStart(5, '0')}$ext")
-            downloadToFile(url, headers, local)
+            val provisional = File(
+                segDir,
+                "p${urlToLocal.size.toString().padStart(5, '0')}.bin"
+            )
+            downloadToFile(url, headers, provisional)
+            // CDNs often disguise MPEG-TS/fMP4 as .jpg/.txt — rename by magic bytes
+            // so FFmpeg's HLS demuxer accepts the local files.
+            val local = renameByContent(provisional, urlToLocal.size, url)
             urlToLocal[url] = local
             done = urlToLocal.size
             onProgress(done, total)
@@ -154,21 +159,76 @@ object HlsOfflineBundler {
     private fun isHttp(url: String): Boolean =
         url.startsWith("http://") || url.startsWith("https://")
 
-    private fun guessExt(url: String): String {
+    /**
+     * Pick a media-friendly extension from file magic bytes (and URL as fallback).
+     * Keeps AES keys as `.key`; maps obfuscated `.jpg`/`.txt` segments to `.ts`/`.m4s`.
+     */
+    private fun renameByContent(file: File, index: Int, sourceUrl: String): File {
+        val ext = sniffExt(file) ?: allowedUrlExt(sourceUrl) ?: ".ts"
+        val target = File(file.parentFile, "p${index.toString().padStart(5, '0')}$ext")
+        if (file.absolutePath == target.absolutePath) return file
+        if (target.exists()) target.delete()
+        return if (file.renameTo(target)) {
+            target
+        } else {
+            file.copyTo(target, overwrite = true)
+            file.delete()
+            target
+        }
+    }
+
+    private fun sniffExt(file: File): String? {
+        val header = ByteArray(12)
+        val read = file.inputStream().use { it.read(header) }
+        if (read <= 0) return null
+
+        // MPEG-TS sync byte 0x47
+        if (header[0] == 0x47.toByte()) return ".ts"
+
+        // ISO BMFF / fMP4: ....ftyp / styp / moof / mdat / sidx
+        if (read >= 8) {
+            val box = String(header, 4, 4, Charsets.US_ASCII)
+            if (box == "ftyp" || box == "styp" || box == "moof" || box == "mdat" || box == "sidx") {
+                return ".m4s"
+            }
+        }
+
+        // ADTS AAC
+        if (read >= 2) {
+            val b0 = header[0].toInt() and 0xFF
+            val b1 = header[1].toInt() and 0xFF
+            if (b0 == 0xFF && (b1 and 0xF0) == 0xF0) return ".aac"
+        }
+
+        // ID3-tagged audio
+        if (read >= 3 &&
+            header[0] == 'I'.code.toByte() &&
+            header[1] == 'D'.code.toByte() &&
+            header[2] == '3'.code.toByte()
+        ) {
+            return ".aac"
+        }
+
+        // Raw AES key blobs are typically 16 bytes with no media signature.
+        if (file.length() in 16L..32L) return ".key"
+
+        return null
+    }
+
+    /** Only keep URL extensions that FFmpeg already allows for HLS segments. */
+    private fun allowedUrlExt(url: String): String? {
         val path = try {
             URI(url).path ?: url
         } catch (_: Exception) {
             url
         }
-        val name = path.substringAfterLast('/')
-        val ext = name.substringAfterLast('.', missingDelimiterValue = "")
-        return when {
-            ext.equals("m4s", true) -> ".m4s"
-            ext.equals("mp4", true) -> ".mp4"
-            ext.equals("aac", true) -> ".aac"
-            ext.equals("key", true) -> ".key"
-            ext.length in 1..5 && ext.all { it.isLetterOrDigit() } -> ".${ext.lowercase()}"
-            else -> ".ts"
+        val ext = path.substringAfterLast('/')
+            .substringAfterLast('.', missingDelimiterValue = "")
+            .lowercase()
+        return when (ext) {
+            "ts", "m2ts", "mts", "mpg", "mpeg", "mpegts",
+            "m4s", "mp4", "m4a", "m4v", "aac", "cmfv", "cmfa", "fmp4", "key" -> ".$ext"
+            else -> null
         }
     }
 
