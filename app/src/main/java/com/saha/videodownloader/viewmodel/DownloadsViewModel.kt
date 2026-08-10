@@ -45,4 +45,9 @@ class DownloadsViewModel(application: Application) : AndroidViewModel(applicatio
     fun cancelFfmpeg(item: LibraryDownload) {
         repository.cancelFfmpegJob(item.id)
     }
+
+    fun retryFfmpeg(item: LibraryDownload) {
+        if (!item.id.startsWith("ffmpeg-job:")) return
+        repository.retryFfmpegJob(item.id, item.sourceUrl)
+    }
 }

@@ -54,7 +54,8 @@ object DownloadHelper {
         context: Context,
         url: String,
         onDownloadStarted: (() -> Unit)? = null,
-        onDownloadFinished: (() -> Unit)? = null
+        onDownloadFinished: (() -> Unit)? = null,
+        userAgent: String? = null
     ) {
         val options = arrayOf(
             "Mux เป็น MP4 (ffmpeg) — ไฟล์ใน Downloads",
@@ -71,7 +72,8 @@ object DownloadHelper {
                             // fully foreground — battery tip dialog comes after.
                             FfmpegHlsDownloadStrategy(
                                 onStarted = onDownloadStarted,
-                                onFinished = onDownloadFinished
+                                onFinished = onDownloadFinished,
+                                userAgent = userAgent
                             ).download(url, context)
                             BatteryOptimizationPrompt.maybePromptLater(context)
                         }
