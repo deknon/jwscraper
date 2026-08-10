@@ -277,6 +277,9 @@ class FfmpegMuxService : Service() {
                                 val err = extractFfmpegError(completed)
                                 Log.w(TAG, "mux attempt ${attemptIndex + 1} failed: $err")
                                 val hint = when {
+                                    err.contains("allowed_segment_extensions", true) ||
+                                        err.contains("extension_picky", true) ->
+                                        " — นามสกุล segment ถูกบล็อก (อัปเดตแอปแล้วลองใหม่)"
                                     err.contains("403") || err.contains("Forbidden", true) ->
                                         " — เซิร์ฟเวอร์ปฏิเสธ (เปิดหน้าให้วิดีโอเล่นก่อน แล้วดาวน์โหลดใหม่)"
                                     err.contains("Invalid data", true) ->
@@ -491,7 +494,11 @@ class FfmpegMuxService : Service() {
         ): List<MuxStrategy> {
             val common = arrayOf(
                 "-y",
+                // Some CDNs obfuscate segments as .jpg/.txt/.html — FFmpeg 8+
+                // rejects those unless allowed_segment_extensions is widened.
                 "-allowed_extensions", "ALL",
+                "-allowed_segment_extensions", "ALL",
+                "-extension_picky", "0",
                 "-protocol_whitelist", "file,crypto,data",
                 "-f", "hls",
                 "-i", input
@@ -545,7 +552,9 @@ class FfmpegMuxService : Service() {
                         lower.contains("server returned") ||
                         lower.contains("bitstream filter") ||
                         lower.contains("does not contain") ||
-                        lower.contains("option not found")
+                        lower.contains("option not found") ||
+                        lower.contains("allowed_segment_extensions") ||
+                        lower.contains("allowed_extensions")
                 }
                 .toList()
                 .takeLast(4)
