@@ -5,6 +5,8 @@ import android.app.AlertDialog
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import android.os.Handler
+import android.os.Looper
 import android.os.PowerManager
 import android.provider.Settings
 
@@ -16,9 +18,24 @@ object BatteryOptimizationPrompt {
 
     private const val PREFS = "oem_tips"
     private const val KEY_ASKED = "asked_battery_unrestricted"
+    private val mainHandler = Handler(Looper.getMainLooper())
+
+    /**
+     * Show after download/mux has already been started so the dialog does not
+     * steal foreground timing from [android.content.Context.startForegroundService].
+     */
+    fun maybePromptLater(context: Context, delayMs: Long = 800L) {
+        val appContext = context.applicationContext
+        // Keep Activity context for the dialog window token when possible.
+        val dialogContext = context
+        mainHandler.postDelayed({ maybePrompt(dialogContext, appContext) }, delayMs)
+    }
 
     fun maybePrompt(context: Context) {
-        val appContext = context.applicationContext
+        maybePrompt(context, context.applicationContext)
+    }
+
+    private fun maybePrompt(dialogContext: Context, appContext: Context) {
         val prefs = appContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         if (prefs.getBoolean(KEY_ASKED, false)) return
 
@@ -29,18 +46,20 @@ object BatteryOptimizationPrompt {
         }
 
         prefs.edit().putBoolean(KEY_ASKED, true).apply()
-        AlertDialog.Builder(context)
-            .setTitle("Xiaomi / HyperOS")
-            .setMessage(
-                "บน Xiaomi 14 (Android 16 / HyperOS) ระบบอาจหยุดแอปตอน mux HLS นานๆ\n\n" +
-                    "แนะนำ: อนุญาตให้แอปนี้ทำงานโดยไม่จำกัดแบตเตอรี่ " +
-                    "และเปิด Autostart ถ้ามีในตั้งค่าแอป"
-            )
-            .setPositiveButton("ตั้งค่าแบตเตอรี่") { _, _ ->
-                openBatterySettings(appContext)
-            }
-            .setNegativeButton("ไว้ทีหลัง", null)
-            .show()
+        runCatching {
+            AlertDialog.Builder(dialogContext)
+                .setTitle("Xiaomi / HyperOS")
+                .setMessage(
+                    "บน Xiaomi 14 (Android 16 / HyperOS) ระบบอาจหยุดแอปตอน mux HLS นานๆ\n\n" +
+                        "แนะนำ: อนุญาตให้แอปนี้ทำงานโดยไม่จำกัดแบตเตอรี่ " +
+                        "และเปิด Autostart ถ้ามีในตั้งค่าแอป"
+                )
+                .setPositiveButton("ตั้งค่าแบตเตอรี่") { _, _ ->
+                    openBatterySettings(appContext)
+                }
+                .setNegativeButton("ไว้ทีหลัง", null)
+                .show()
+        }
     }
 
     @SuppressLint("BatteryLife")

@@ -67,20 +67,22 @@ object DownloadHelper {
                 try {
                     when (which) {
                         0 -> {
-                            BatteryOptimizationPrompt.maybePrompt(context)
+                            // Start mux first so FGS begins while the Activity is still
+                            // fully foreground — battery tip dialog comes after.
                             FfmpegHlsDownloadStrategy(
                                 onStarted = onDownloadStarted,
                                 onFinished = onDownloadFinished
                             ).download(url, context)
+                            BatteryOptimizationPrompt.maybePromptLater(context)
                         }
                         1 -> {
-                            BatteryOptimizationPrompt.maybePrompt(context)
                             onDownloadStarted?.invoke()
                             try {
                                 media3HlsStrategy.download(url, context)
                             } finally {
                                 onDownloadFinished?.invoke()
                             }
+                            BatteryOptimizationPrompt.maybePromptLater(context)
                         }
                     }
                 } catch (e: Exception) {

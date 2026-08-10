@@ -71,7 +71,7 @@ class OfflineDownloadRepository(context: Context) {
     fun cancelFfmpegJob(id: String) {
         val sessionId = FfmpegJobTracker.get(id)?.sessionId
         if (sessionId != null) {
-            FFmpegKit.cancel(sessionId)
+            runCatching { FFmpegKit.cancel(sessionId) }
         }
         FfmpegJobTracker.remove(id)
         // Ask the mux service to drop its foreground notification.

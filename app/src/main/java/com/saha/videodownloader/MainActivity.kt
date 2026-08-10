@@ -25,6 +25,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.core.content.ContextCompat
 import androidx.core.util.Consumer
+import com.saha.videodownloader.download.FfmpegJobTracker
 import com.saha.videodownloader.ui.DownloadsScreen
 import com.saha.videodownloader.ui.MainScreen
 import com.saha.videodownloader.ui.theme.SahaVideoDownloaderTheme
@@ -41,6 +42,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        FfmpegJobTracker.init(this)
         requestNotificationPermissionIfNeeded()
         handleIncomingIntent(intent, showFeedback = true)
         enableEdgeToEdge()

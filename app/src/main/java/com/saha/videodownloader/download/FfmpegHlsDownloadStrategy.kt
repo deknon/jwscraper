@@ -18,11 +18,12 @@ class FfmpegHlsDownloadStrategy(
 
     override fun download(url: String, context: Context) {
         onStarted?.let { mainHandler.post(it) }
+        // Registers job in downloads list before FGS starts.
         FfmpegMuxService.start(context, url)
         mainHandler.post {
             Toast.makeText(
                 context.applicationContext,
-                "เริ่ม mux ใน foreground service — ดูความคืบหน้าในหน้าดาวน์โหลด / แถบแจ้งเตือน",
+                "เพิ่มงาน mux แล้ว — เปิดหน้าดาวน์โหลดเพื่อดูสถานะ (หรือแถบแจ้งเตือน)",
                 Toast.LENGTH_LONG
             ).show()
             // Service owns the long-running work; clear the button spinner promptly.

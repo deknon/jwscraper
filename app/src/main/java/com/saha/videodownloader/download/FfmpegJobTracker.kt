@@ -1,14 +1,22 @@
 package com.saha.videodownloader.download
 
+import android.content.Context
+import android.content.SharedPreferences
+import androidx.core.content.edit
 import com.saha.videodownloader.model.LibraryDownload
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
+import org.json.JSONArray
+import org.json.JSONObject
 import java.util.concurrent.ConcurrentHashMap
 
 /**
- * In-memory tracker for active ffmpeg mux jobs (progress + cancel).
+ * Tracker for active ffmpeg mux jobs.
+ *
+ * Persists to SharedPreferences so the downloads list still shows a row after
+ * process death (common on HyperOS when FGS / native ffmpeg crashes).
  */
 object FfmpegJobTracker {
 
@@ -26,6 +34,19 @@ object FfmpegJobTracker {
     private val jobs = ConcurrentHashMap<String, Job>()
     private val _snapshot = MutableStateFlow<List<Job>>(emptyList())
     val snapshot: StateFlow<List<Job>> = _snapshot.asStateFlow()
+
+    @Volatile
+    private var prefs: SharedPreferences? = null
+
+    fun init(context: Context) {
+        if (prefs != null) return
+        synchronized(this) {
+            if (prefs != null) return
+            prefs = context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            loadFromDisk()
+            markInterruptedActiveJobs()
+        }
+    }
 
     fun start(id: String, title: String, sourceUrl: String) {
         jobs[id] = Job(
@@ -76,6 +97,24 @@ object FfmpegJobTracker {
 
     fun get(id: String): Job? = jobs[id]
 
+    private fun markInterruptedActiveJobs() {
+        var changed = false
+        jobs.forEach { (id, job) ->
+            if (job.state == LibraryDownload.State.DOWNLOADING ||
+                job.state == LibraryDownload.State.QUEUED
+            ) {
+                jobs[id] = job.copy(
+                    state = LibraryDownload.State.FAILED,
+                    message = "งานหยุดกลางคัน (แอปถูกปิด/ระบบหยุด) — กดดาวน์โหลดใหม่",
+                    sessionId = null,
+                    updatedAtMs = System.currentTimeMillis()
+                )
+                changed = true
+            }
+        }
+        if (changed) publish()
+    }
+
     private fun update(id: String, transform: (Job) -> Job) {
         val current = jobs[id] ?: return
         jobs[id] = transform(current)
@@ -83,8 +122,62 @@ object FfmpegJobTracker {
     }
 
     private fun publish() {
-        _snapshot.update {
-            jobs.values.sortedByDescending { job -> job.updatedAtMs }
+        val ordered = jobs.values.sortedByDescending { job -> job.updatedAtMs }
+        _snapshot.update { ordered }
+        persist(ordered)
+    }
+
+    private fun persist(ordered: List<Job>) {
+        val p = prefs ?: return
+        val array = JSONArray()
+        ordered.forEach { job ->
+            array.put(
+                JSONObject()
+                    .put("id", job.id)
+                    .put("title", job.title)
+                    .put("sourceUrl", job.sourceUrl)
+                    .put("state", job.state.name)
+                    .put("progressPercent", job.progressPercent.toDouble())
+                    .put("message", job.message)
+                    .put("updatedAtMs", job.updatedAtMs)
+            )
+        }
+        // commit() so a sudden HyperOS kill still leaves the row on disk.
+        p.edit(commit = true) { putString(KEY_JOBS, array.toString()) }
+    }
+
+    private fun loadFromDisk() {
+        val raw = prefs?.getString(KEY_JOBS, null) ?: return
+        try {
+            val array = JSONArray(raw)
+            for (i in 0 until array.length()) {
+                val obj = array.getJSONObject(i)
+                val id = obj.getString("id")
+                val state = runCatching {
+                    LibraryDownload.State.valueOf(obj.getString("state"))
+                }.getOrDefault(LibraryDownload.State.FAILED)
+                jobs[id] = Job(
+                    id = id,
+                    title = obj.getString("title"),
+                    sourceUrl = obj.getString("sourceUrl"),
+                    state = state,
+                    progressPercent = obj.optDouble("progressPercent", 0.0).toFloat(),
+                    message = if (obj.isNull("message")) {
+                        null
+                    } else {
+                        obj.optString("message").takeIf { it.isNotBlank() }
+                    },
+                    updatedAtMs = obj.optLong("updatedAtMs", System.currentTimeMillis())
+                )
+            }
+            _snapshot.value = jobs.values.sortedByDescending { it.updatedAtMs }
+        } catch (_: Exception) {
+            // Corrupt prefs — start empty.
+            jobs.clear()
+            _snapshot.value = emptyList()
         }
     }
+
+    private const val PREFS = "ffmpeg_active_jobs"
+    private const val KEY_JOBS = "jobs"
 }
