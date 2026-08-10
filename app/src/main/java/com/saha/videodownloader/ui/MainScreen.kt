@@ -1,13 +1,18 @@
 package com.saha.videodownloader.ui
 
 import android.annotation.SuppressLint
+import android.app.Activity
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
+import android.content.ContextWrapper
 import android.graphics.Bitmap
 import android.view.ViewGroup
+import android.view.WindowManager
+import android.webkit.CookieManager
 import android.webkit.WebChromeClient
 import android.webkit.WebSettings
+import android.webkit.WebStorage
 import android.webkit.WebView
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
@@ -50,6 +55,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -67,7 +73,9 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.saha.videodownloader.download.DownloadHelper
+import com.saha.videodownloader.download.FfmpegJobTracker
 import com.saha.videodownloader.model.DetectedVideoUrl
+import com.saha.videodownloader.model.LibraryDownload
 import com.saha.videodownloader.model.VideoType
 import com.saha.videodownloader.viewmodel.DetectedFilter
 import com.saha.videodownloader.viewmodel.VideoDownloaderViewModel
@@ -92,6 +100,8 @@ fun MainScreen(
     val recentUrls by viewModel.recentUrls.collectAsStateWithLifecycle()
     val useDesktopUa by viewModel.useDesktopUa.collectAsStateWithLifecycle()
     val reloadToken by viewModel.reloadToken.collectAsStateWithLifecycle()
+    val searchQuery by viewModel.searchQuery.collectAsStateWithLifecycle()
+    val ffmpegJobs by FfmpegJobTracker.snapshot.collectAsStateWithLifecycle()
 
     var urlInput by remember { mutableStateOf(initialUrl?.takeIf { it.isNotBlank() } ?: "https://") }
     var webViewLoadUrl by remember { mutableStateOf<String?>(null) }
@@ -99,6 +109,21 @@ fun MainScreen(
     var canGoBack by remember { mutableStateOf(false) }
     var showHistory by remember { mutableStateOf(false) }
     val snackbarHostState = remember { SnackbarHostState() }
+    val keepScreenOn = isDownloading || ffmpegJobs.any {
+        it.state == LibraryDownload.State.DOWNLOADING || it.state == LibraryDownload.State.QUEUED
+    }
+
+    DisposableEffect(keepScreenOn) {
+        val window = context.findActivity()?.window
+        if (keepScreenOn) {
+            window?.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        } else {
+            window?.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        }
+        onDispose {
+            window?.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        }
+    }
 
     LaunchedEffect(initialUrl) {
         val seed = initialUrl?.takeIf { it.isNotBlank() } ?: return@LaunchedEffect
@@ -187,6 +212,12 @@ fun MainScreen(
                 },
                 onHistory = { showHistory = true },
                 onReload = { viewModel.reloadPage() },
+                onClearSiteData = {
+                    clearWebViewData(webViewRef)
+                    viewModel.clearDetectedUrls()
+                    Toast.makeText(context, "ล้างคุกกี้/แคชแล้ว", Toast.LENGTH_SHORT).show()
+                    viewModel.reloadPage()
+                },
                 onGo = {
                     val normalized = normalizeUrl(urlInput)
                     urlInput = normalized
@@ -272,6 +303,8 @@ fun MainScreen(
                 totalCount = detectedVideos.size,
                 filter = filter,
                 onFilterChange = { viewModel.setFilter(it) },
+                searchQuery = searchQuery,
+                onSearchQueryChange = { viewModel.setSearchQuery(it) },
                 selectedUrl = selectedUrl,
                 onSelect = { viewModel.selectUrl(it) },
                 onCopy = { url ->
@@ -306,7 +339,7 @@ fun MainScreen(
                 onClear = { viewModel.clearDetectedUrls() },
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(240.dp)
+                    .height(280.dp)
                     .padding(12.dp)
             )
         }
@@ -321,6 +354,7 @@ private fun UrlBar(
     onBack: () -> Unit,
     onHistory: () -> Unit,
     onReload: () -> Unit,
+    onClearSiteData: () -> Unit,
     onGo: () -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -348,12 +382,18 @@ private fun UrlBar(
             }
         }
         Spacer(modifier = Modifier.height(4.dp))
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        Row(
+            modifier = Modifier.horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
             OutlinedButton(onClick = onHistory) {
                 Text("ประวัติ")
             }
             OutlinedButton(onClick = onReload) {
                 Text("รีเฟรช")
+            }
+            OutlinedButton(onClick = onClearSiteData) {
+                Text("ล้างข้อมูลไซต์")
             }
         }
     }
@@ -485,6 +525,8 @@ private fun DetectedListSection(
     totalCount: Int,
     filter: DetectedFilter,
     onFilterChange: (DetectedFilter) -> Unit,
+    searchQuery: String,
+    onSearchQueryChange: (String) -> Unit,
     selectedUrl: String?,
     onSelect: (String) -> Unit,
     onCopy: (String) -> Unit,
@@ -521,6 +563,14 @@ private fun DetectedListSection(
         }
 
         Spacer(modifier = Modifier.height(4.dp))
+        OutlinedTextField(
+            value = searchQuery,
+            onValueChange = onSearchQueryChange,
+            modifier = Modifier.fillMaxWidth(),
+            singleLine = true,
+            label = { Text("ค้นหาในรายการ") }
+        )
+        Spacer(modifier = Modifier.height(4.dp))
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -552,7 +602,7 @@ private fun DetectedListSection(
                 text = if (totalCount == 0) {
                     "ยังไม่พบวิดีโอ — เปิดหน้าเว็บแล้วรอให้รายการขึ้น"
                 } else {
-                    "ไม่มีรายการในตัวกรองนี้"
+                    "ไม่มีรายการในตัวกรอง/คำค้นหานี้"
                 },
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -632,4 +682,25 @@ private fun normalizeUrl(raw: String): String {
     } else {
         "https://$trimmed"
     }
+}
+
+@SuppressLint("SetJavaScriptEnabled")
+private fun clearWebViewData(webView: WebView?) {
+    webView?.apply {
+        stopLoading()
+        clearCache(true)
+        clearFormData()
+        clearHistory()
+    }
+    CookieManager.getInstance().apply {
+        removeAllCookies(null)
+        flush()
+    }
+    WebStorage.getInstance().deleteAllData()
+}
+
+private tailrec fun Context.findActivity(): Activity? = when (this) {
+    is Activity -> this
+    is ContextWrapper -> baseContext.findActivity()
+    else -> null
 }

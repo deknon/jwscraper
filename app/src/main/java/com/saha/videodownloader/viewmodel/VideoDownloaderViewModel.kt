@@ -33,13 +33,22 @@ class VideoDownloaderViewModel(application: Application) : AndroidViewModel(appl
     private val _filter = MutableStateFlow(DetectedFilter.ALL)
     val filter: StateFlow<DetectedFilter> = _filter.asStateFlow()
 
+    private val _searchQuery = MutableStateFlow("")
+    val searchQuery: StateFlow<String> = _searchQuery.asStateFlow()
+
     val filteredVideos: StateFlow<List<DetectedVideoUrl>> =
-        combine(_detectedVideos, _filter) { videos, selectedFilter ->
-            when (selectedFilter) {
+        combine(_detectedVideos, _filter, _searchQuery) { videos, selectedFilter, query ->
+            val byType = when (selectedFilter) {
                 DetectedFilter.ALL -> videos
                 DetectedFilter.MP4 -> videos.filter { it.type == VideoType.MP4 }
                 DetectedFilter.HLS -> videos.filter { it.type == VideoType.HLS }
                 DetectedFilter.UNKNOWN -> videos.filter { it.type == VideoType.UNKNOWN }
+            }
+            val needle = query.trim()
+            if (needle.isEmpty()) {
+                byType
+            } else {
+                byType.filter { it.url.contains(needle, ignoreCase = true) }
             }
         }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
@@ -94,16 +103,34 @@ class VideoDownloaderViewModel(application: Application) : AndroidViewModel(appl
 
     fun setFilter(filter: DetectedFilter) {
         _filter.value = filter
+        clearSelectionIfHidden()
+    }
+
+    fun setSearchQuery(query: String) {
+        _searchQuery.value = query
+        clearSelectionIfHidden()
+    }
+
+    private fun clearSelectionIfHidden() {
         val selected = _selectedUrl.value ?: return
-        val selectedItem = _detectedVideos.value.firstOrNull { it.url == selected } ?: return
-        val matches = when (filter) {
-            DetectedFilter.ALL -> true
-            DetectedFilter.MP4 -> selectedItem.type == VideoType.MP4
-            DetectedFilter.HLS -> selectedItem.type == VideoType.HLS
-            DetectedFilter.UNKNOWN -> selectedItem.type == VideoType.UNKNOWN
-        }
-        if (!matches) {
-            _selectedUrl.value = null
+        if (filteredVideos.value.none { it.url == selected }) {
+            // Fall back to type/query check against source list for immediate UI.
+            val item = _detectedVideos.value.firstOrNull { it.url == selected } ?: run {
+                _selectedUrl.value = null
+                return
+            }
+            val filter = _filter.value
+            val typeOk = when (filter) {
+                DetectedFilter.ALL -> true
+                DetectedFilter.MP4 -> item.type == VideoType.MP4
+                DetectedFilter.HLS -> item.type == VideoType.HLS
+                DetectedFilter.UNKNOWN -> item.type == VideoType.UNKNOWN
+            }
+            val query = _searchQuery.value.trim()
+            val queryOk = query.isEmpty() || item.url.contains(query, ignoreCase = true)
+            if (!typeOk || !queryOk) {
+                _selectedUrl.value = null
+            }
         }
     }
 
