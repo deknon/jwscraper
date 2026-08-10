@@ -1,11 +1,17 @@
 package com.saha.videodownloader.ui
 
 import android.annotation.SuppressLint
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
 import android.graphics.Bitmap
 import android.view.ViewGroup
 import android.webkit.WebChromeClient
 import android.webkit.WebSettings
 import android.webkit.WebView
+import android.widget.Toast
+import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -17,6 +23,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
@@ -26,6 +33,7 @@ import androidx.compose.material3.Badge
 import androidx.compose.material3.BadgedBox
 import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
@@ -59,6 +67,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.saha.videodownloader.download.DownloadHelper
 import com.saha.videodownloader.model.DetectedVideoUrl
 import com.saha.videodownloader.model.VideoType
+import com.saha.videodownloader.viewmodel.DetectedFilter
 import com.saha.videodownloader.viewmodel.VideoDownloaderViewModel
 import com.saha.videodownloader.webview.VideoInterceptingWebViewClient
 
@@ -67,17 +76,40 @@ import com.saha.videodownloader.webview.VideoInterceptingWebViewClient
 fun MainScreen(
     viewModel: VideoDownloaderViewModel,
     onOpenDownloads: () -> Unit = {},
+    initialUrl: String? = null,
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
     val detectedVideos by viewModel.detectedVideos.collectAsStateWithLifecycle()
+    val filteredVideos by viewModel.filteredVideos.collectAsStateWithLifecycle()
+    val filter by viewModel.filter.collectAsStateWithLifecycle()
     val isPageLoading by viewModel.isPageLoading.collectAsStateWithLifecycle()
     val isDownloading by viewModel.isDownloading.collectAsStateWithLifecycle()
     val selectedUrl by viewModel.selectedUrl.collectAsStateWithLifecycle()
+    val pendingNavigateUrl by viewModel.pendingNavigateUrl.collectAsStateWithLifecycle()
 
-    var urlInput by remember { mutableStateOf("https://") }
+    var urlInput by remember { mutableStateOf(initialUrl?.takeIf { it.isNotBlank() } ?: "https://") }
     var webViewLoadUrl by remember { mutableStateOf<String?>(null) }
+    var webViewRef by remember { mutableStateOf<WebView?>(null) }
+    var canGoBack by remember { mutableStateOf(false) }
     val snackbarHostState = remember { SnackbarHostState() }
+
+    LaunchedEffect(initialUrl) {
+        val seed = initialUrl?.takeIf { it.isNotBlank() } ?: return@LaunchedEffect
+        val normalized = normalizeUrl(seed)
+        urlInput = normalized
+        viewModel.clearDetectedUrls()
+        webViewLoadUrl = normalized
+    }
+
+    LaunchedEffect(pendingNavigateUrl) {
+        val target = pendingNavigateUrl ?: return@LaunchedEffect
+        val normalized = normalizeUrl(target)
+        urlInput = normalized
+        viewModel.clearDetectedUrls()
+        webViewLoadUrl = normalized
+        viewModel.consumeNavigateRequest()
+    }
 
     val previousCount = remember { mutableStateOf(0) }
     LaunchedEffect(detectedVideos.size) {
@@ -85,6 +117,16 @@ fun MainScreen(
             snackbarHostState.showSnackbar("พบวิดีโอแล้ว (${detectedVideos.size})")
         }
         previousCount.value = detectedVideos.size
+    }
+
+    BackHandler(enabled = canGoBack) {
+        val webView = webViewRef
+        if (webView != null && webView.canGoBack()) {
+            webView.goBack()
+            canGoBack = webView.canGoBack()
+        } else {
+            canGoBack = false
+        }
     }
 
     Scaffold(
@@ -126,6 +168,15 @@ fun MainScreen(
             UrlBar(
                 urlInput = urlInput,
                 onUrlChange = { urlInput = it },
+                canGoBack = canGoBack,
+                onBack = {
+                    webViewRef?.let { webView ->
+                        if (webView.canGoBack()) {
+                            webView.goBack()
+                            canGoBack = webView.canGoBack()
+                        }
+                    }
+                },
                 onGo = {
                     val normalized = normalizeUrl(urlInput)
                     urlInput = normalized
@@ -155,6 +206,13 @@ fun MainScreen(
             VideoWebView(
                 loadUrl = webViewLoadUrl,
                 viewModel = viewModel,
+                onWebViewReady = { webViewRef = it },
+                onCanGoBackChanged = { canGoBack = it },
+                onUrlChanged = { current ->
+                    if (!current.isNullOrBlank() && current != "about:blank") {
+                        urlInput = current
+                    }
+                },
                 modifier = Modifier
                     .fillMaxWidth()
                     .weight(1f)
@@ -163,9 +221,18 @@ fun MainScreen(
             HorizontalDivider()
 
             DetectedListSection(
-                videos = detectedVideos,
+                videos = filteredVideos,
+                totalCount = detectedVideos.size,
+                filter = filter,
+                onFilterChange = { viewModel.setFilter(it) },
                 selectedUrl = selectedUrl,
                 onSelect = { viewModel.selectUrl(it) },
+                onCopy = { url ->
+                    val clipboard =
+                        context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                    clipboard.setPrimaryClip(ClipData.newPlainText("video-url", url))
+                    Toast.makeText(context, "คัดลอก URL แล้ว", Toast.LENGTH_SHORT).show()
+                },
                 onDownload = {
                     val selected = detectedVideos.firstOrNull { it.url == selectedUrl }
                     if (selected != null) {
@@ -192,7 +259,7 @@ fun MainScreen(
                 onClear = { viewModel.clearDetectedUrls() },
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(220.dp)
+                    .height(240.dp)
                     .padding(12.dp)
             )
         }
@@ -203,6 +270,8 @@ fun MainScreen(
 private fun UrlBar(
     urlInput: String,
     onUrlChange: (String) -> Unit,
+    canGoBack: Boolean,
+    onBack: () -> Unit,
     onGo: () -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -210,6 +279,13 @@ private fun UrlBar(
         modifier = modifier,
         verticalAlignment = Alignment.CenterVertically
     ) {
+        OutlinedButton(
+            onClick = onBack,
+            enabled = canGoBack
+        ) {
+            Text("←")
+        }
+        Spacer(modifier = Modifier.width(8.dp))
         OutlinedTextField(
             value = urlInput,
             onValueChange = onUrlChange,
@@ -231,9 +307,14 @@ private fun UrlBar(
 private fun VideoWebView(
     loadUrl: String?,
     viewModel: VideoDownloaderViewModel,
+    onWebViewReady: (WebView) -> Unit,
+    onCanGoBackChanged: (Boolean) -> Unit,
+    onUrlChanged: (String?) -> Unit,
     modifier: Modifier = Modifier
 ) {
     val latestViewModel by rememberUpdatedState(viewModel)
+    val latestCanGoBack by rememberUpdatedState(onCanGoBackChanged)
+    val latestUrlChanged by rememberUpdatedState(onUrlChanged)
 
     AndroidView(
         modifier = modifier,
@@ -260,22 +341,29 @@ private fun VideoWebView(
                     override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
                         super.onPageStarted(view, url, favicon)
                         latestViewModel.setPageLoading(true)
+                        latestUrlChanged(url)
+                        latestCanGoBack(view?.canGoBack() == true)
                     }
 
                     override fun onPageFinished(view: WebView?, url: String?) {
                         super.onPageFinished(view, url)
                         latestViewModel.setPageLoading(false)
+                        latestUrlChanged(url)
+                        latestCanGoBack(view?.canGoBack() == true)
                     }
                 }
 
                 webChromeClient = WebChromeClient()
+                onWebViewReady(this)
             }
         },
         update = { webView ->
+            onWebViewReady(webView)
             val target = loadUrl
             if (target != null && webView.url != target) {
                 webView.loadUrl(target)
             }
+            onCanGoBackChanged(webView.canGoBack())
         }
     )
 }
@@ -283,8 +371,12 @@ private fun VideoWebView(
 @Composable
 private fun DetectedListSection(
     videos: List<DetectedVideoUrl>,
+    totalCount: Int,
+    filter: DetectedFilter,
+    onFilterChange: (DetectedFilter) -> Unit,
     selectedUrl: String?,
     onSelect: (String) -> Unit,
+    onCopy: (String) -> Unit,
     onDownload: () -> Unit,
     onClear: () -> Unit,
     modifier: Modifier = Modifier
@@ -296,16 +388,16 @@ private fun DetectedListSection(
             verticalAlignment = Alignment.CenterVertically
         ) {
             Text(
-                text = "วิดีโอที่ตรวจพบ (${videos.size})",
+                text = "วิดีโอ (${videos.size}/$totalCount)",
                 style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.SemiBold
             )
             Row {
                 OutlinedButton(
                     onClick = onClear,
-                    enabled = videos.isNotEmpty()
+                    enabled = totalCount > 0
                 ) {
-                    Text("ล้างรายการ")
+                    Text("ล้าง")
                 }
                 Spacer(modifier = Modifier.width(8.dp))
                 Button(
@@ -317,11 +409,40 @@ private fun DetectedListSection(
             }
         }
 
+        Spacer(modifier = Modifier.height(4.dp))
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            DetectedFilter.entries.forEach { option ->
+                FilterChip(
+                    selected = filter == option,
+                    onClick = { onFilterChange(option) },
+                    label = {
+                        Text(
+                            when (option) {
+                                DetectedFilter.ALL -> "ทั้งหมด"
+                                DetectedFilter.MP4 -> "MP4"
+                                DetectedFilter.HLS -> "HLS"
+                                DetectedFilter.UNKNOWN -> "อื่นๆ"
+                            }
+                        )
+                    }
+                )
+            }
+        }
+
         Spacer(modifier = Modifier.height(8.dp))
 
         if (videos.isEmpty()) {
             Text(
-                text = "ยังไม่พบวิดีโอ — เปิดหน้าเว็บแล้วรอให้รายการขึ้น",
+                text = if (totalCount == 0) {
+                    "ยังไม่พบวิดีโอ — เปิดหน้าเว็บแล้วรอให้รายการขึ้น"
+                } else {
+                    "ไม่มีรายการในตัวกรองนี้"
+                },
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -334,7 +455,8 @@ private fun DetectedListSection(
                     DetectedVideoRow(
                         item = item,
                         selected = item.url == selectedUrl,
-                        onSelect = { onSelect(item.url) }
+                        onSelect = { onSelect(item.url) },
+                        onCopy = { onCopy(item.url) }
                     )
                 }
             }
@@ -346,7 +468,8 @@ private fun DetectedListSection(
 private fun DetectedVideoRow(
     item: DetectedVideoUrl,
     selected: Boolean,
-    onSelect: () -> Unit
+    onSelect: () -> Unit,
+    onCopy: () -> Unit
 ) {
     Row(
         modifier = Modifier
@@ -368,7 +491,9 @@ private fun DetectedVideoRow(
                 style = MaterialTheme.typography.bodySmall
             )
         }
-        Spacer(modifier = Modifier.width(8.dp))
+        TextButton(onClick = onCopy) {
+            Text("คัดลอก")
+        }
         TypeBadge(type = item.type)
     }
 }
