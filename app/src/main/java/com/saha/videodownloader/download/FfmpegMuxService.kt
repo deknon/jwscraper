@@ -8,9 +8,11 @@ import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
+import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.app.ServiceCompat
+import androidx.core.content.ContextCompat
 import com.arthenica.ffmpegkit.FFmpegKit
 import com.arthenica.ffmpegkit.FFprobeKit
 import com.arthenica.ffmpegkit.ReturnCode
@@ -31,6 +33,11 @@ import kotlin.math.max
  */
 class FfmpegMuxService : Service() {
 
+    override fun onCreate() {
+        super.onCreate()
+        FfmpegJobTracker.init(this)
+    }
+
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -38,7 +45,11 @@ class FfmpegMuxService : Service() {
             ACTION_CANCEL -> {
                 val jobId = intent.getStringExtra(EXTRA_JOB_ID)
                 if (jobId != null) {
-                    OfflineDownloadRepository(this).cancelFfmpegJob(jobId)
+                    val sessionId = FfmpegJobTracker.get(jobId)?.sessionId
+                    if (sessionId != null) {
+                        runCatching { FFmpegKit.cancel(sessionId) }
+                    }
+                    FfmpegJobTracker.remove(jobId)
                 }
                 stopSelfSafely()
                 return START_NOT_STICKY
@@ -52,36 +63,52 @@ class FfmpegMuxService : Service() {
                 val jobId = intent.getStringExtra(EXTRA_JOB_ID) ?: "ffmpeg-job:${UUID.randomUUID()}"
                 val filename = intent.getStringExtra(EXTRA_FILENAME)
                     ?: "hls_${System.currentTimeMillis()}.mp4"
+                // Job may already be registered by start() — ensure row exists before FGS.
+                if (FfmpegJobTracker.get(jobId) == null) {
+                    FfmpegJobTracker.start(jobId, filename, url)
+                }
                 startMux(jobId, url, filename)
             }
         }
-        return START_STICKY
+        return START_NOT_STICKY
     }
 
     private fun startMux(jobId: String, url: String, filename: String) {
-        VideoDownloadService.ensureChannel(this)
-        val notification = buildNotification(jobId, filename, 0, "เริ่ม mux…")
-        ServiceCompat.startForeground(
-            this,
-            NOTIFICATION_ID,
-            notification,
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
-            } else {
-                0
-            }
-        )
+        try {
+            VideoDownloadService.ensureChannel(this)
+            val notification = buildNotification(jobId, filename, 0, "เริ่ม mux…")
+            ServiceCompat.startForeground(
+                this,
+                NOTIFICATION_ID,
+                notification,
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
+                } else {
+                    0
+                }
+            )
+        } catch (t: Throwable) {
+            Log.e(TAG, "startForeground failed", t)
+            FfmpegJobTracker.fail(
+                jobId,
+                "เริ่ม foreground service ไม่ได้: ${t.message ?: t.javaClass.simpleName}"
+            )
+            stopSelfSafely()
+            return
+        }
 
-        FfmpegJobTracker.start(jobId, filename, url)
+        FfmpegJobTracker.updateProgress(jobId, 0f, "กำลังเตรียม ffmpeg…")
 
         val workDir = File(cacheDir, "hls_mux").apply { mkdirs() }
         val outputFile = File(workDir, filename)
         if (outputFile.exists()) outputFile.delete()
 
         val durationMs = AtomicLong(0L)
-        FFprobeKit.getMediaInformationAsync(url) { probeSession ->
-            val durationSec = probeSession.mediaInformation?.duration?.toDoubleOrNull() ?: 0.0
-            durationMs.set(max(0L, (durationSec * 1000.0).toLong()))
+        runCatching {
+            FFprobeKit.getMediaInformationAsync(url) { probeSession ->
+                val durationSec = probeSession.mediaInformation?.duration?.toDoubleOrNull() ?: 0.0
+                durationMs.set(max(0L, (durationSec * 1000.0).toLong()))
+            }
         }
 
         val args = arrayOf(
@@ -94,78 +121,104 @@ class FfmpegMuxService : Service() {
             outputFile.absolutePath
         )
 
-        val session = FFmpegKit.executeWithArgumentsAsync(
-            args,
-            { completed ->
-                try {
-                    when {
-                        ReturnCode.isSuccess(completed.returnCode) -> {
-                            updateNotification(jobId, filename, 99, "กำลังบันทึกไป Downloads…")
-                            FfmpegJobTracker.updateProgress(jobId, 0.99f, "กำลังบันทึกไป Downloads…")
-                            val published = FfmpegPublishHelper.publishToDownloads(
-                                this,
-                                outputFile,
-                                filename
-                            )
-                            if (published != null) {
-                                OfflineDownloadRepository(this).recordFfmpegSuccess(
-                                    sourceUrl = url,
-                                    title = filename,
-                                    contentUri = published.toString()
+        val session = try {
+            FFmpegKit.executeWithArgumentsAsync(
+                args,
+                { completed ->
+                    try {
+                        when {
+                            ReturnCode.isSuccess(completed.returnCode) -> {
+                                updateNotification(jobId, filename, 99, "กำลังบันทึกไป Downloads…")
+                                FfmpegJobTracker.updateProgress(jobId, 0.99f, "กำลังบันทึกไป Downloads…")
+                                val published = FfmpegPublishHelper.publishToDownloads(
+                                    this,
+                                    outputFile,
+                                    filename
                                 )
-                                FfmpegJobTracker.complete(jobId)
-                                updateNotification(jobId, filename, 100, "บันทึกแล้ว", ongoing = false)
-                            } else {
-                                FfmpegJobTracker.fail(jobId, "mux สำเร็จ แต่คัดลอกไป Downloads ไม่ได้")
-                                updateNotification(
-                                    jobId,
-                                    filename,
-                                    0,
-                                    "บันทึก Downloads ไม่สำเร็จ",
-                                    ongoing = false
-                                )
+                                if (published != null) {
+                                    OfflineDownloadRepository(this).recordFfmpegSuccess(
+                                        sourceUrl = url,
+                                        title = filename,
+                                        contentUri = published.toString()
+                                    )
+                                    FfmpegJobTracker.complete(jobId)
+                                    updateNotification(jobId, filename, 100, "บันทึกแล้ว", ongoing = false)
+                                } else {
+                                    FfmpegJobTracker.fail(jobId, "mux สำเร็จ แต่คัดลอกไป Downloads ไม่ได้")
+                                    updateNotification(
+                                        jobId,
+                                        filename,
+                                        0,
+                                        "บันทึก Downloads ไม่สำเร็จ",
+                                        ongoing = false
+                                    )
+                                }
+                            }
+                            ReturnCode.isCancel(completed.returnCode) -> {
+                                FfmpegJobTracker.remove(jobId)
+                            }
+                            else -> {
+                                val fail = completed.failStackTrace?.take(160)
+                                val message =
+                                    "ffmpeg ล้มเหลว (rc=${completed.returnCode})" +
+                                        if (fail.isNullOrBlank()) "" else ": $fail"
+                                FfmpegJobTracker.fail(jobId, message)
+                                updateNotification(jobId, filename, 0, message, ongoing = false)
                             }
                         }
-                        ReturnCode.isCancel(completed.returnCode) -> {
-                            FfmpegJobTracker.remove(jobId)
+                    } catch (t: Throwable) {
+                        Log.e(TAG, "mux completion handler failed", t)
+                        FfmpegJobTracker.fail(
+                            jobId,
+                            "mux error: ${t.message ?: t.javaClass.simpleName}"
+                        )
+                    } finally {
+                        runCatching {
+                            if (outputFile.exists()) outputFile.delete()
                         }
-                        else -> {
-                            val fail = completed.failStackTrace?.take(160)
-                            val message =
-                                "ffmpeg ล้มเหลว (rc=${completed.returnCode})" +
-                                    if (fail.isNullOrBlank()) "" else ": $fail"
-                            FfmpegJobTracker.fail(jobId, message)
-                            updateNotification(jobId, filename, 0, message, ongoing = false)
+                        stopSelfSafely()
+                    }
+                },
+                null,
+                { stats: Statistics ->
+                    try {
+                        val duration = durationMs.get()
+                        val timeMs = stats.time.toLong()
+                        val progress = if (duration > 0L) {
+                            (timeMs.toFloat() / duration.toFloat()).coerceIn(0f, 0.99f)
+                        } else {
+                            (0.9f * (1f - 1f / (1f + timeMs / 15_000f))).coerceIn(0f, 0.9f)
                         }
+                        val pct = (progress * 100).toInt()
+                        val speed = stats.speed
+                        val msg = if (speed > 0) {
+                            "mux $pct% · ${"%.1f".format(speed)}x"
+                        } else {
+                            "mux $pct%"
+                        }
+                        FfmpegJobTracker.updateProgress(jobId, progress, msg)
+                        updateNotification(jobId, filename, pct, msg)
+                    } catch (t: Throwable) {
+                        Log.w(TAG, "stats update failed", t)
                     }
-                } finally {
-                    if (outputFile.exists()) {
-                        outputFile.delete()
-                    }
-                    // Keep failed/completed notification briefly; stop FGS.
-                    stopSelfSafely()
                 }
-            },
-            null,
-            { stats: Statistics ->
-                val duration = durationMs.get()
-                val timeMs = stats.time.toLong()
-                val progress = if (duration > 0L) {
-                    (timeMs.toFloat() / duration.toFloat()).coerceIn(0f, 0.99f)
-                } else {
-                    (0.9f * (1f - 1f / (1f + timeMs / 15_000f))).coerceIn(0f, 0.9f)
-                }
-                val pct = (progress * 100).toInt()
-                val speed = stats.speed
-                val msg = if (speed > 0) {
-                    "mux $pct% · ${"%.1f".format(speed)}x"
-                } else {
-                    "mux $pct%"
-                }
-                FfmpegJobTracker.updateProgress(jobId, progress, msg)
-                updateNotification(jobId, filename, pct, msg)
-            }
-        )
+            )
+        } catch (t: Throwable) {
+            Log.e(TAG, "ffmpeg execute failed to start", t)
+            FfmpegJobTracker.fail(
+                jobId,
+                "เริ่ม ffmpeg ไม่ได้: ${t.message ?: t.javaClass.simpleName}"
+            )
+            updateNotification(
+                jobId,
+                filename,
+                0,
+                "เริ่ม ffmpeg ไม่ได้",
+                ongoing = false
+            )
+            stopSelfSafely()
+            return
+        }
         FfmpegJobTracker.bindSession(jobId, session.sessionId)
     }
 
@@ -215,18 +268,24 @@ class FfmpegMuxService : Service() {
         text: String,
         ongoing: Boolean = true
     ) {
-        NotificationManagerCompat.from(this).notify(
-            NOTIFICATION_ID,
-            buildNotification(jobId, title, progress, text, ongoing)
-        )
+        // POST_NOTIFICATIONS denied → notify() throws on API 33+; never crash the mux job.
+        runCatching {
+            NotificationManagerCompat.from(this).notify(
+                NOTIFICATION_ID,
+                buildNotification(jobId, title, progress, text, ongoing)
+            )
+        }.onFailure { Log.w(TAG, "notify failed", it) }
     }
 
     private fun stopSelfSafely() {
-        ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_DETACH)
+        runCatching {
+            ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
+        }
         stopSelf()
     }
 
     companion object {
+        private const val TAG = "FfmpegMuxService"
         const val ACTION_START = "com.saha.videodownloader.action.FFMPEG_MUX_START"
         const val ACTION_CANCEL = "com.saha.videodownloader.action.FFMPEG_MUX_CANCEL"
         const val EXTRA_URL = "extra_url"
@@ -234,21 +293,33 @@ class FfmpegMuxService : Service() {
         const val EXTRA_FILENAME = "extra_filename"
         private const val NOTIFICATION_ID = 42
 
-        fun start(context: Context, url: String) {
+        /**
+         * Registers the job in the downloads list *before* starting the FGS so a
+         * crash during startForeground / native load still leaves a visible row.
+         */
+        fun start(context: Context, url: String): String {
             val appContext = context.applicationContext
+            FfmpegJobTracker.init(appContext)
             val filename = buildFilename(url)
             val jobId = "ffmpeg-job:${UUID.randomUUID()}"
+            FfmpegJobTracker.start(jobId, filename, url)
+
             val intent = Intent(appContext, FfmpegMuxService::class.java).apply {
                 action = ACTION_START
                 putExtra(EXTRA_URL, url)
                 putExtra(EXTRA_JOB_ID, jobId)
                 putExtra(EXTRA_FILENAME, filename)
             }
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                appContext.startForegroundService(intent)
-            } else {
-                appContext.startService(intent)
+            try {
+                ContextCompat.startForegroundService(appContext, intent)
+            } catch (t: Throwable) {
+                Log.e(TAG, "startForegroundService failed", t)
+                FfmpegJobTracker.fail(
+                    jobId,
+                    "เริ่ม service ไม่ได้: ${t.message ?: t.javaClass.simpleName}"
+                )
             }
+            return jobId
         }
 
         private fun buildFilename(url: String): String {
