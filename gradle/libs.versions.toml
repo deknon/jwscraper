@@ -11,6 +11,7 @@ composeBom = "2025.08.00"
 webkit = "1.12.1"
 material = "1.12.0"
 media3 = "1.5.1"
+ffmpegKit = "8.1.7"
 
 [libraries]
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
@@ -36,6 +37,7 @@ androidx-media3-exoplayer-hls = { group = "androidx.media3", name = "media3-exop
 androidx-media3-database = { group = "androidx.media3", name = "media3-database", version.ref = "media3" }
 androidx-media3-datasource = { group = "androidx.media3", name = "media3-datasource", version.ref = "media3" }
 androidx-media3-common = { group = "androidx.media3", name = "media3-common", version.ref = "media3" }
+ffmpeg-kit-https = { group = "dev.ffmpegkit-maintained", name = "ffmpeg-kit-https", version.ref = "ffmpegKit" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }
