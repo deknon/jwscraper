@@ -118,4 +118,12 @@ object DownloadHelper {
     const val MOBILE_CHROME_UA =
         "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 " +
             "(KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36"
+
+    /**
+     * Desktop Chrome UA — optional for sites that serve a different JW Player embed
+     * to mobile clients. Keep mobile as the default.
+     */
+    const val DESKTOP_CHROME_UA =
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
+            "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 }
