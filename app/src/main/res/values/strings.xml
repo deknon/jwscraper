@@ -1,4 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">saha Video Downloader</string>
+    <string name="download_notification_channel_name">HLS downloads</string>
+    <string name="download_notification_channel_description">ความคืบหน้าการดาวน์โหลดวิดีโอ HLS</string>
+    <string name="download_notification_message">กำลังดาวน์โหลด HLS…</string>
 </resources>

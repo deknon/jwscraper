@@ -10,7 +10,7 @@
 4. เลือก URL ที่ต้องการด้วย radio
 5. กดปุ่ม **ดาวน์โหลด**
    - **MP4** → ดาวน์โหลดผ่าน `DownloadManager` ไปยังโฟลเดอร์ Downloads
-   - **HLS** → แจ้งเตือนว่ายังไม่รวม segment จริง (stub)
+   - **HLS** → ดาวน์โหลด segment เข้า Media3 offline cache (แจ้งเตือนความคืบหน้า)
    - **UNKNOWN** → พยายามดาวน์โหลดแบบ progressive ผ่าน `DownloadManager`
 
 ปุ่ม **ล้างรายการ** ล้าง URL ที่ตรวจพบทั้งหมด
@@ -19,7 +19,7 @@
 
 1. **ไม่สามารถดาวน์โหลดวิดีโอที่มี DRM แข็งแรงได้** (Widevine ฯลฯ) — สตรีมที่เข้ารหัสด้วย DRM จะไม่สามารถบันทึกเป็นไฟล์ธรรมดาได้
 2. **URL แบบ signed/token อาจหมดอายุเร็ว** — ถ้าลิงก์หมดอายุก่อนกดดาวน์โหลด ให้โหลดหน้าเว็บใหม่แล้วเลือก URL ล่าสุดจากรายการ
-3. **HLS (`.m3u8`) เวอร์ชันนี้ดักจับ URL ได้อย่างเดียว** — ยังไม่ดาวน์โหลดหรือรวม segment จริง
+3. **HLS (`.m3u8`) บันทึกเป็น Media3 offline cache** — เล่นออฟไลน์ผ่าน ExoPlayer ได้ แต่ยังไม่ mux เป็นไฟล์ `.mp4` เดี่ยวในโฟลเดอร์ Downloads
 
 ## สถาปัตยกรรมหลัก
 
@@ -30,26 +30,24 @@
 | `webview/VideoInterceptingWebViewClient.kt` | ดัก request ใน WebView แล้วส่ง callback (thread-safe) |
 | `viewmodel/VideoDownloaderViewModel.kt` | StateFlow + synchronized set กัน URL ซ้ำ |
 | `ui/MainScreen.kt` | Compose UI: TextField, WebView, LazyColumn, ปุ่มดาวน์โหลด |
-| `download/DownloadHelper.kt` | DownloadManager สำหรับ MP4 + จัดการ HLS stub |
-| `download/HlsDownloadStrategy.kt` | interface + stub ที่โยน `UnsupportedOperationException` |
+| `download/DownloadHelper.kt` | DownloadManager สำหรับ MP4 + ส่งต่อ HLS |
+| `download/HlsDownloadStrategy.kt` | interface + `Media3HlsDownloadStrategy` |
+| `download/VideoDownloadService.kt` | Media3 `DownloadService` (foreground) |
+| `download/Media3DownloadUtil.kt` | Singleton cache + `DownloadManager` |
 
 ## ความต้องการของระบบ
 
 - minSdk 24 / targetSdk 34 / compileSdk 35
 - Android Studio (แนะนำ Hedgehog ขึ้นไป) พร้อม JDK 17
-- Gradle sync ตาม `gradle/libs.versions.toml` (Compose BOM `2025.08.00`)
+- Gradle sync ตาม `gradle/libs.versions.toml` (Compose BOM `2025.08.00`, Media3 `1.5.1`)
 
 > หมายเหตุ: `compileSdk` ตั้งเป็น 35 เพราะ Compose BOM ล่าสุดบังคับ — `targetSdk` ยังเป็น 34 ตามสเปก
 
-## ต้องทำอะไรเพิ่มถ้าจะรองรับ HLS แบบสมบูรณ์
+## ถ้าต้องการ HLS เป็นไฟล์ `.mp4` เดี่ยว
 
-เลือกอย่างใดอย่างหนึ่ง:
+ตอนนี้ใช้ทางเลือก **(a) Media3 ExoPlayer DownloadService** แล้ว (offline cache)
 
-### a) Media3 ExoPlayer DownloadService (ทางที่ Google แนะนำ)
-
-- ใช้ `androidx.media3:media3-exoplayer` + `media3-exoplayer-hls` + `media3-datasource`
-- สร้าง `DownloadService` ของ Media3 เพื่อ offline caching ของ HLS/DASH
-- รองรับ progressive download ของ playlist และ segment ในตัว พร้อม resume
+ถ้าต้องการ mux เป็นไฟล์เดียวใน Downloads:
 
 ### b) ffmpeg ผ่าน ffmpeg-kit-android
 
