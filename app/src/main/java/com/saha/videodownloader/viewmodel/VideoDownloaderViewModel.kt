@@ -2,19 +2,31 @@ package com.saha.videodownloader.viewmodel
 
 import android.app.Application
 import androidx.lifecycle.AndroidViewModel
+import androidx.lifecycle.viewModelScope
 import com.saha.videodownloader.download.DownloadHelper
 import com.saha.videodownloader.download.UrlHistoryStore
+import com.saha.videodownloader.download.VideoMetaProber
 import com.saha.videodownloader.model.DetectedVideoUrl
+import com.saha.videodownloader.model.VideoMetaState
 import com.saha.videodownloader.model.VideoType
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
+import kotlinx.coroutines.withContext
+import java.util.concurrent.ConcurrentHashMap
 
 class VideoDownloaderViewModel(application: Application) : AndroidViewModel(application) {
 
     private val historyStore = UrlHistoryStore(application)
     private val seenUrls = synchronizedSetOf<String>()
+    private val probeJobs = ConcurrentHashMap<String, Job>()
+    private val probeLimiter = Semaphore(permits = 3)
 
     private val _detectedVideos = MutableStateFlow<List<DetectedVideoUrl>>(emptyList())
     val detectedVideos: StateFlow<List<DetectedVideoUrl>> = _detectedVideos.asStateFlow()
@@ -61,12 +73,16 @@ class VideoDownloaderViewModel(application: Application) : AndroidViewModel(appl
             current + DetectedVideoUrl(
                 url = url,
                 type = type,
-                detectedAt = System.currentTimeMillis()
+                detectedAt = System.currentTimeMillis(),
+                metaState = VideoMetaState.PENDING
             )
         }
+        enqueueMetaProbe(url, type)
     }
 
     fun clearDetectedUrls() {
+        probeJobs.values.forEach { it.cancel() }
+        probeJobs.clear()
         synchronized(seenUrls) {
             seenUrls.clear()
         }
@@ -112,6 +128,53 @@ class VideoDownloaderViewModel(application: Application) : AndroidViewModel(appl
 
     fun currentUserAgent(): String =
         if (_useDesktopUa.value) DownloadHelper.DESKTOP_CHROME_UA else DownloadHelper.MOBILE_CHROME_UA
+
+    private fun enqueueMetaProbe(url: String, type: VideoType) {
+        probeJobs[url]?.cancel()
+        val job = viewModelScope.launch {
+            updateVideo(url) { it.copy(metaState = VideoMetaState.LOADING) }
+            val meta = try {
+                probeLimiter.withPermit {
+                    withContext(Dispatchers.IO) {
+                        VideoMetaProber.probe(
+                            url = url,
+                            type = type,
+                            pageUrl = _currentPageUrl.value,
+                            userAgent = currentUserAgent()
+                        )
+                    }
+                }
+            } catch (_: Throwable) {
+                null
+            }
+
+            // Drop result if the list was cleared / item removed.
+            if (_detectedVideos.value.none { it.url == url }) return@launch
+
+            if (meta == null || (meta.contentLengthBytes == null && meta.durationMs == null)) {
+                updateVideo(url) {
+                    it.copy(metaState = VideoMetaState.UNAVAILABLE)
+                }
+            } else {
+                updateVideo(url) {
+                    it.copy(
+                        contentLengthBytes = meta.contentLengthBytes,
+                        durationMs = meta.durationMs,
+                        sizeIsEstimate = meta.sizeIsEstimate,
+                        metaState = VideoMetaState.READY
+                    )
+                }
+            }
+        }
+        probeJobs[url] = job
+        job.invokeOnCompletion { probeJobs.remove(url, job) }
+    }
+
+    private fun updateVideo(url: String, transform: (DetectedVideoUrl) -> DetectedVideoUrl) {
+        _detectedVideos.update { list ->
+            list.map { if (it.url == url) transform(it) else it }
+        }
+    }
 
     private fun <T> synchronizedSetOf(): MutableSet<T> =
         java.util.Collections.synchronizedSet(mutableSetOf())

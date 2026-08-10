@@ -81,6 +81,7 @@ import com.saha.videodownloader.download.FfmpegJobTracker
 import com.saha.videodownloader.download.WebViewCookieHelper
 import com.saha.videodownloader.model.DetectedVideoUrl
 import com.saha.videodownloader.model.LibraryDownload
+import com.saha.videodownloader.model.VideoMetaState
 import com.saha.videodownloader.model.VideoType
 import com.saha.videodownloader.viewmodel.VideoDownloaderViewModel
 import com.saha.videodownloader.webview.VideoInterceptingWebViewClient
@@ -676,7 +677,7 @@ private fun DetectedListSection(
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .heightIn(max = 160.dp)
+                    .heightIn(max = 200.dp)
             ) {
                 if (videos.isEmpty()) {
                     Text(
@@ -689,7 +690,7 @@ private fun DetectedListSection(
                     LazyColumn(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .heightIn(max = 148.dp),
+                            .heightIn(max = 188.dp),
                         verticalArrangement = Arrangement.spacedBy(2.dp)
                     ) {
                         items(videos, key = { it.url }) { item ->
@@ -724,8 +725,62 @@ private fun DetectedVideoRow(
                 overflow = TextOverflow.Ellipsis,
                 style = MaterialTheme.typography.bodySmall
             )
+            val metaLine = formatVideoMeta(item)
+            if (metaLine != null) {
+                Text(
+                    text = metaLine,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
         }
         TypeBadge(type = item.type)
+    }
+}
+
+private fun formatVideoMeta(item: DetectedVideoUrl): String? {
+    return when (item.metaState) {
+        VideoMetaState.PENDING, VideoMetaState.LOADING -> "กำลังอ่านขนาด…"
+        VideoMetaState.UNAVAILABLE -> "ขนาด/ความยาวไม่ทราบ"
+        VideoMetaState.READY -> {
+            val parts = buildList {
+                formatDuration(item.durationMs)?.let { add(it) }
+                formatBytes(item.contentLengthBytes, item.sizeIsEstimate)?.let { add(it) }
+            }
+            parts.joinToString(" · ").ifBlank { "ขนาด/ความยาวไม่ทราบ" }
+        }
+    }
+}
+
+private fun formatBytes(bytes: Long?, estimate: Boolean): String? {
+    if (bytes == null || bytes <= 0L) return null
+    val units = arrayOf("B", "KB", "MB", "GB", "TB")
+    var value = bytes.toDouble()
+    var unit = 0
+    while (value >= 1024.0 && unit < units.lastIndex) {
+        value /= 1024.0
+        unit++
+    }
+    val text = if (unit == 0) {
+        "${bytes.toInt()} ${units[unit]}"
+    } else {
+        String.format("%.1f %s", value, units[unit])
+    }
+    return if (estimate) "~$text" else text
+}
+
+private fun formatDuration(durationMs: Long?): String? {
+    if (durationMs == null || durationMs <= 0L) return null
+    val totalSec = (durationMs + 500L) / 1000L
+    val hours = totalSec / 3600L
+    val minutes = (totalSec % 3600L) / 60L
+    val seconds = totalSec % 60L
+    return if (hours > 0L) {
+        String.format("%d:%02d:%02d", hours, minutes, seconds)
+    } else {
+        String.format("%d:%02d", minutes, seconds)
     }
 }
 
