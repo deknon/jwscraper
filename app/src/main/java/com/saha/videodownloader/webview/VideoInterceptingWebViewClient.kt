@@ -4,6 +4,7 @@ import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import com.saha.videodownloader.download.CapturedMediaHeaders
 import com.saha.videodownloader.model.VideoType
 
 /**
@@ -26,6 +27,7 @@ open class VideoInterceptingWebViewClient(
         val url = request?.url?.toString()
         if (!url.isNullOrBlank()) {
             inspectUrl(url)
+            CapturedMediaHeaders.capture(url, request?.requestHeaders)
         }
         // Return null so WebView loads the resource normally.
         return null

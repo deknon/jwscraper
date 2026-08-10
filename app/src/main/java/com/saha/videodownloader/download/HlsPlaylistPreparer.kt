@@ -29,10 +29,12 @@ object HlsPlaylistPreparer {
         workDir: File
     ): Result {
         workDir.mkdirs()
-        val headers = browserHeaders(mediaUrl, pageUrl, userAgent)
+        val headers = CapturedMediaHeaders.mergeFor(mediaUrl, pageUrl, userAgent)
 
         val first = fetchText(mediaUrl, headers)
-            ?: return Result(mediaUrl, null, "ดาวน์โหลด playlist ไม่ได้")
+            ?: throw IllegalStateException(
+                "ดาวน์โหลด playlist ไม่ได้ (HTTP/เครือข่าย) — เปิดหน้าให้วิดีโอเล่นก่อน"
+            )
 
         if (!looksLikeM3u8(first.body)) {
             val kind = sniffBody(first.body)
@@ -106,24 +108,6 @@ object HlsPlaylistPreparer {
             }
         }
         return null
-    }
-
-    private fun browserHeaders(
-        mediaUrl: String,
-        pageUrl: String?,
-        userAgent: String
-    ): Map<String, String> {
-        val referer = WebViewCookieHelper.resolveReferer(mediaUrl, pageUrl)
-        val origin = WebViewCookieHelper.resolveOrigin(pageUrl, mediaUrl)
-        val cookie = WebViewCookieHelper.collectCookieHeader(mediaUrl, pageUrl)
-        return buildMap {
-            put("User-Agent", userAgent)
-            put("Accept", "*/*")
-            put("Accept-Language", "en-US,en;q=0.9,th;q=0.8")
-            put("Referer", referer)
-            if (!origin.isNullOrBlank()) put("Origin", origin)
-            if (!cookie.isNullOrBlank()) put("Cookie", cookie)
-        }
     }
 
     private fun looksLikeM3u8(body: String): Boolean {

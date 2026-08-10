@@ -14,7 +14,6 @@ import androidx.core.app.NotificationManagerCompat
 import androidx.core.app.ServiceCompat
 import androidx.core.content.ContextCompat
 import com.arthenica.ffmpegkit.FFmpegKit
-import com.arthenica.ffmpegkit.FFprobeKit
 import com.arthenica.ffmpegkit.ReturnCode
 import com.arthenica.ffmpegkit.Session
 import com.arthenica.ffmpegkit.Statistics
@@ -26,7 +25,6 @@ import java.util.UUID
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
-import kotlin.math.max
 
 /**
  * Foreground service that runs ffmpeg HLS→MP4 mux.
@@ -40,6 +38,7 @@ class FfmpegMuxService : Service() {
     private val activeSessionId = AtomicReference<Long?>(null)
     private val prepareExecutor = Executors.newSingleThreadExecutor()
     private val localPlaylistRef = AtomicReference<File?>(null)
+    private val offlineTempDirRef = AtomicReference<File?>(null)
 
     override fun onCreate() {
         super.onCreate()
@@ -139,33 +138,46 @@ class FfmpegMuxService : Service() {
         prepareExecutor.execute {
             try {
                 WebViewCookieHelper.flush()
+                val requestHeaders = CapturedMediaHeaders.mergeFor(url, refererUrl, userAgent)
                 val prepared = HlsPlaylistPreparer.prepare(
                     mediaUrl = url,
                     pageUrl = refererUrl,
                     userAgent = userAgent,
                     workDir = workDir
                 )
-                localPlaylistRef.set(prepared.localPlaylist)
-                val input = prepared.inputUrl
-                val httpHeaders = WebViewCookieHelper.buildFfmpegHeaders(url, refererUrl, userAgent)
-                val resolvedReferer = WebViewCookieHelper.resolveReferer(url, refererUrl)
-                Log.i(TAG, "playlist ready: ${prepared.note} input=$input")
+                val absolutePlaylist = prepared.localPlaylist
+                    ?: throw IllegalStateException(prepared.note)
 
-                val durationMs = AtomicLong(0L)
-                runCatching {
-                    FFprobeKit.getMediaInformationAsync(input) { probeSession ->
-                        val durationSec =
-                            probeSession.mediaInformation?.duration?.toDoubleOrNull() ?: 0.0
-                        durationMs.set(max(0L, (durationSec * 1000.0).toLong()))
-                    }
+                FfmpegJobTracker.updateProgress(jobId, 0.02f, "กำลังดาวน์โหลด segments…")
+                val bundle = HlsOfflineBundler.bundle(
+                    absolutePlaylist = absolutePlaylist,
+                    workDir = workDir,
+                    headers = requestHeaders
+                ) { done, total ->
+                    val fraction = if (total <= 0) 0f else done.toFloat() / total.toFloat()
+                    val progress = 0.02f + 0.75f * fraction
+                    FfmpegJobTracker.updateProgress(
+                        jobId,
+                        progress.coerceIn(0f, 0.77f),
+                        "ดาวน์โหลด segments $done/$total"
+                    )
+                    updateNotification(
+                        jobId,
+                        filename,
+                        (progress * 100).toInt().coerceIn(0, 77),
+                        "segments $done/$total"
+                    )
                 }
+                localPlaylistRef.set(bundle.localPlaylist)
+                offlineTempDirRef.set(bundle.tempDir)
+                runCatching { absolutePlaylist.delete() }
 
-                val strategies = buildMuxStrategies(
+                val input = bundle.localPlaylist.absolutePath
+                Log.i(TAG, "offline bundle ready: ${bundle.segmentCount} segments → $input")
+
+                val durationMs = AtomicLong(0L) // unknown; stats use time-based fallback
+                val strategies = buildOfflineMuxStrategies(
                     input = input,
-                    originalUrl = url,
-                    userAgent = userAgent,
-                    headers = httpHeaders,
-                    referer = resolvedReferer,
                     outputPath = outputFile.absolutePath
                 )
                 runMuxAttempt(
@@ -179,9 +191,9 @@ class FfmpegMuxService : Service() {
                     lastError = null
                 )
             } catch (t: Throwable) {
-                Log.e(TAG, "playlist prepare failed", t)
+                Log.e(TAG, "playlist/segment prepare failed", t)
                 val message = t.message?.takeIf { it.isNotBlank() }
-                    ?: "เตรียม playlist ไม่สำเร็จ"
+                    ?: "เตรียม HLS ไม่สำเร็จ"
                 FfmpegJobTracker.fail(jobId, message)
                 updateNotification(jobId, filename, 0, message, ongoing = false)
                 cleanupLocalPlaylist()
@@ -402,6 +414,9 @@ class FfmpegMuxService : Service() {
         localPlaylistRef.getAndSet(null)?.let { file ->
             runCatching { if (file.exists()) file.delete() }
         }
+        offlineTempDirRef.getAndSet(null)?.let { dir ->
+            runCatching { if (dir.exists()) dir.deleteRecursively() }
+        }
     }
 
     private data class MuxStrategy(val label: String, val args: Array<String>)
@@ -466,37 +481,25 @@ class FfmpegMuxService : Service() {
             return "${sanitized}_${System.currentTimeMillis()}.mp4"
         }
 
-        private fun buildMuxStrategies(
+        /**
+         * Offline-only strategies: playlist + segments are already on disk, so ffmpeg
+         * does not talk to the CDN (avoids TLS fingerprint 403).
+         */
+        private fun buildOfflineMuxStrategies(
             input: String,
-            originalUrl: String,
-            userAgent: String,
-            headers: String,
-            referer: String,
             outputPath: String
         ): List<MuxStrategy> {
-            fun prefix(useHlsFormat: Boolean = true): Array<String> {
-                val base = mutableListOf(
-                    "-y",
-                    "-user_agent", userAgent,
-                    "-referer", referer,
-                    "-headers", headers,
-                    "-allowed_extensions", "ALL",
-                    "-protocol_whitelist", "file,http,https,tcp,tls,crypto,data,pipe",
-                    "-reconnect", "1",
-                    "-reconnect_streamed", "1",
-                    "-reconnect_delay_max", "5"
-                )
-                if (useHlsFormat) {
-                    base += listOf("-f", "hls")
-                }
-                base += listOf("-i", input)
-                return base.toTypedArray()
-            }
-
+            val common = arrayOf(
+                "-y",
+                "-allowed_extensions", "ALL",
+                "-protocol_whitelist", "file,crypto,data",
+                "-f", "hls",
+                "-i", input
+            )
             return listOf(
                 MuxStrategy(
-                    label = "hls+copy+aac_bsf",
-                    args = prefix(useHlsFormat = true) + arrayOf(
+                    label = "offline+copy+aac_bsf",
+                    args = common + arrayOf(
                         "-c", "copy",
                         "-bsf:a", "aac_adtstoasc",
                         "-movflags", "+faststart",
@@ -504,42 +507,16 @@ class FfmpegMuxService : Service() {
                     )
                 ),
                 MuxStrategy(
-                    label = "hls+copy",
-                    args = prefix(useHlsFormat = true) + arrayOf(
+                    label = "offline+copy",
+                    args = common + arrayOf(
                         "-c", "copy",
                         "-movflags", "+faststart",
                         outputPath
                     )
                 ),
                 MuxStrategy(
-                    label = "auto+copy+aac_bsf",
-                    args = prefix(useHlsFormat = false) + arrayOf(
-                        "-c", "copy",
-                        "-bsf:a", "aac_adtstoasc",
-                        "-movflags", "+faststart",
-                        outputPath
-                    )
-                ),
-                // Last resort: hit the original remote URL (not local rewrite).
-                MuxStrategy(
-                    label = "remote+copy",
-                    args = arrayOf(
-                        "-y",
-                        "-user_agent", userAgent,
-                        "-referer", referer,
-                        "-headers", headers,
-                        "-allowed_extensions", "ALL",
-                        "-protocol_whitelist", "file,http,https,tcp,tls,crypto,data,pipe",
-                        "-i", originalUrl,
-                        "-c", "copy",
-                        "-bsf:a", "aac_adtstoasc",
-                        "-movflags", "+faststart",
-                        outputPath
-                    )
-                ),
-                MuxStrategy(
-                    label = "hls+copyV+aac",
-                    args = prefix(useHlsFormat = true) + arrayOf(
+                    label = "offline+copyV+aac",
+                    args = common + arrayOf(
                         "-c:v", "copy",
                         "-c:a", "aac",
                         "-b:a", "128k",
