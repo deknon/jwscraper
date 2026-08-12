@@ -62,7 +62,9 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -78,6 +80,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.saha.videodownloader.download.DownloadFilenameResolver
 import com.saha.videodownloader.download.DownloadHelper
 import com.saha.videodownloader.download.FfmpegJobTracker
 import com.saha.videodownloader.download.WebViewCookieHelper
@@ -104,7 +107,12 @@ fun MainScreen(
     val recentUrls by viewModel.recentUrls.collectAsStateWithLifecycle()
     val useDesktopUa by viewModel.useDesktopUa.collectAsStateWithLifecycle()
     val reloadToken by viewModel.reloadToken.collectAsStateWithLifecycle()
+    val currentPageUrlState by viewModel.currentPageUrl.collectAsStateWithLifecycle()
     val ffmpegJobs by FfmpegJobTracker.snapshot.collectAsStateWithLifecycle()
+
+    val canClearPrevious = remember(detectedVideos, currentPageUrlState) {
+        viewModel.hasDetectionsFromOtherPages()
+    }
 
     var urlInput by remember { mutableStateOf(initialUrl?.takeIf { it.isNotBlank() } ?: "https://") }
     var webViewLoadUrl by remember { mutableStateOf<String?>(null) }
@@ -235,15 +243,56 @@ fun MainScreen(
                     videos = detectedVideos,
                     expanded = listExpanded,
                     onExpandedChange = { listExpanded = it },
+                    onClearPrevious = {
+                        if (canClearPrevious) {
+                            val removed = viewModel.keepOnlyCurrentPageVideos()
+                            scope.launch {
+                                snackbarHostState.showSnackbar(
+                                    if (removed > 0) {
+                                        "ล้างรายการเก่าแล้ว ($removed) — เหลือเฉพาะหน้านี้"
+                                    } else {
+                                        "ไม่มีรายการจากหน้าอื่น"
+                                    }
+                                )
+                            }
+                        } else {
+                            viewModel.clearDetectedUrls()
+                            scope.launch {
+                                snackbarHostState.showSnackbar("ล้างรายการวิดีโอแล้ว")
+                            }
+                        }
+                    },
+                    canClearPrevious = canClearPrevious,
                     onDownloadItem = { item ->
                         // Stay on the WebView — never navigate to the downloads library.
                         listExpanded = false
+                        val pageUrl = viewModel.currentPageUrl.value
+                            ?: urlInput.takeIf {
+                                it.startsWith("http://") || it.startsWith("https://")
+                            }
+                        val pageTitle = viewModel.currentPageTitle.value
+                        val userAgent = viewModel.currentUserAgent()
                         when (item.type) {
                             VideoType.MP4 -> {
-                                viewModel.setDownloading(true)
-                                DownloadHelper.downloadMp4(context, item.url)
-                                viewModel.setDownloading(false)
                                 scope.launch {
+                                    viewModel.setDownloading(true)
+                                    val filename = withContext(Dispatchers.IO) {
+                                        DownloadFilenameResolver.resolve(
+                                            mediaUrl = item.url,
+                                            pageTitle = pageTitle,
+                                            pageUrl = pageUrl,
+                                            userAgent = userAgent,
+                                            defaultExt = ".mp4"
+                                        )
+                                    }
+                                    DownloadHelper.downloadMp4(
+                                        context = context,
+                                        url = item.url,
+                                        suggestedName = filename,
+                                        pageUrl = pageUrl,
+                                        userAgent = userAgent
+                                    )
+                                    viewModel.setDownloading(false)
                                     snackbarHostState.showSnackbar(
                                         "เริ่มดาวน์โหลดแล้ว — อยู่หน้าเว็บต่อได้"
                                     )
@@ -264,17 +313,30 @@ fun MainScreen(
                                         )
                                     }
                                 },
-                                userAgent = viewModel.currentUserAgent(),
-                                refererUrl = viewModel.currentPageUrl.value
-                                    ?: urlInput.takeIf {
-                                        it.startsWith("http://") || it.startsWith("https://")
-                                    }
+                                userAgent = userAgent,
+                                refererUrl = pageUrl,
+                                pageTitle = pageTitle
                             )
                             VideoType.UNKNOWN -> {
-                                viewModel.setDownloading(true)
-                                DownloadHelper.handleUnknownOrOther(context, item.url)
-                                viewModel.setDownloading(false)
                                 scope.launch {
+                                    viewModel.setDownloading(true)
+                                    val filename = withContext(Dispatchers.IO) {
+                                        DownloadFilenameResolver.resolve(
+                                            mediaUrl = item.url,
+                                            pageTitle = pageTitle,
+                                            pageUrl = pageUrl,
+                                            userAgent = userAgent,
+                                            defaultExt = ".mp4"
+                                        )
+                                    }
+                                    DownloadHelper.downloadMp4(
+                                        context = context,
+                                        url = item.url,
+                                        suggestedName = filename,
+                                        pageUrl = pageUrl,
+                                        userAgent = userAgent
+                                    )
+                                    viewModel.setDownloading(false)
                                     snackbarHostState.showSnackbar(
                                         "เริ่มดาวน์โหลดแล้ว — อยู่หน้าเว็บต่อได้"
                                     )
@@ -631,7 +693,12 @@ private fun VideoWebView(
                     }
                 }
 
-                webChromeClient = WebChromeClient()
+                webChromeClient = object : WebChromeClient() {
+                    override fun onReceivedTitle(view: WebView?, title: String?) {
+                        super.onReceivedTitle(view, title)
+                        latestViewModel.setCurrentPageTitle(title)
+                    }
+                }
                 onWebViewReady(this)
             }
         },
@@ -661,6 +728,8 @@ private fun DetectedListSection(
     videos: List<DetectedVideoUrl>,
     expanded: Boolean,
     onExpandedChange: (Boolean) -> Unit,
+    onClearPrevious: () -> Unit,
+    canClearPrevious: Boolean,
     onDownloadItem: (DetectedVideoUrl) -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -673,28 +742,47 @@ private fun DetectedListSection(
             modifier = Modifier
                 .fillMaxWidth()
                 .heightIn(min = 40.dp)
-                .clip(RoundedCornerShape(8.dp))
-                .clickable { onExpandedChange(!expanded) }
                 .padding(horizontal = 4.dp, vertical = 0.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Text(
-                text = if (expanded) "▾" else "▸",
-                modifier = Modifier.padding(end = 6.dp),
-                fontSize = 14.sp
-            )
-            Text(
-                text = "วิดีโอ (${videos.size})",
-                style = MaterialTheme.typography.labelLarge,
-                fontWeight = FontWeight.SemiBold,
-                modifier = Modifier.weight(1f)
-            )
-            if (videos.isNotEmpty() && !expanded) {
+            Row(
+                modifier = Modifier
+                    .weight(1f)
+                    .clip(RoundedCornerShape(8.dp))
+                    .clickable { onExpandedChange(!expanded) }
+                    .padding(vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
                 Text(
-                    text = "แตะเพื่อดาวน์โหลด",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                    text = if (expanded) "▾" else "▸",
+                    modifier = Modifier.padding(end = 6.dp),
+                    fontSize = 14.sp
                 )
+                Text(
+                    text = "วิดีโอ (${videos.size})",
+                    style = MaterialTheme.typography.labelLarge,
+                    fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier.weight(1f)
+                )
+                if (videos.isNotEmpty() && !expanded && !canClearPrevious) {
+                    Text(
+                        text = "แตะเพื่อดาวน์โหลด",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+            if (videos.isNotEmpty()) {
+                TextButton(
+                    onClick = onClearPrevious,
+                    contentPadding = ButtonDefaults.TextButtonContentPadding
+                ) {
+                    Text(
+                        text = if (canClearPrevious) "ล้างเก่า" else "ล้าง",
+                        fontSize = 12.sp,
+                        maxLines = 1
+                    )
+                }
             }
         }
 

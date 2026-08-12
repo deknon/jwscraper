@@ -8,7 +8,6 @@ import android.os.Build
 import android.os.Environment
 import android.widget.Toast
 import com.saha.videodownloader.util.BatteryOptimizationPrompt
-import java.net.URI
 
 object DownloadHelper {
 
@@ -20,8 +19,24 @@ object DownloadHelper {
      * SDK <= 28: writes to public Downloads with WRITE_EXTERNAL_STORAGE.
      * SDK >= 29: lets DownloadManager handle MediaStore / scoped storage.
      */
-    fun downloadMp4(context: Context, url: String, suggestedName: String? = null) {
-        val filename = suggestedName?.takeIf { it.isNotBlank() } ?: buildFilename(url)
+    fun downloadMp4(
+        context: Context,
+        url: String,
+        suggestedName: String? = null,
+        pageTitle: String? = null,
+        pageUrl: String? = null,
+        userAgent: String? = null
+    ) {
+        val ua = userAgent ?: MOBILE_CHROME_UA
+        val filename = suggestedName?.takeIf { it.isNotBlank() }
+            ?: DownloadFilenameResolver.resolve(
+                mediaUrl = url,
+                pageTitle = pageTitle,
+                pageUrl = pageUrl,
+                userAgent = ua,
+                defaultExt = ".mp4",
+                probeNetwork = true
+            )
         val request = DownloadManager.Request(Uri.parse(url)).apply {
             setTitle(filename)
             setDescription("กำลังดาวน์โหลดวิดีโอ…")
@@ -30,7 +45,8 @@ object DownloadHelper {
             )
             setAllowedOverMetered(true)
             setAllowedOverRoaming(true)
-            addRequestHeader("User-Agent", MOBILE_CHROME_UA)
+            addRequestHeader("User-Agent", ua)
+            pageUrl?.takeIf { it.startsWith("http") }?.let { addRequestHeader("Referer", it) }
 
             if (Build.VERSION.SDK_INT <= Build.VERSION_CODES.P) {
                 // API 28 and below: explicit public Downloads path + WRITE_EXTERNAL_STORAGE.
@@ -56,7 +72,8 @@ object DownloadHelper {
         onDownloadStarted: (() -> Unit)? = null,
         onDownloadFinished: (() -> Unit)? = null,
         userAgent: String? = null,
-        refererUrl: String? = null
+        refererUrl: String? = null,
+        pageTitle: String? = null
     ) {
         val options = arrayOf(
             "Mux เป็น MP4 (ffmpeg) — ไฟล์ใน Downloads",
@@ -75,7 +92,8 @@ object DownloadHelper {
                                 onStarted = onDownloadStarted,
                                 onFinished = onDownloadFinished,
                                 userAgent = userAgent,
-                                refererUrl = refererUrl
+                                refererUrl = refererUrl,
+                                pageTitle = pageTitle
                             ).download(url, context)
                             BatteryOptimizationPrompt.maybePromptLater(context)
                         }
@@ -102,23 +120,22 @@ object DownloadHelper {
             .show()
     }
 
-    fun handleUnknownOrOther(context: Context, url: String) {
+    fun handleUnknownOrOther(
+        context: Context,
+        url: String,
+        pageTitle: String? = null,
+        pageUrl: String? = null,
+        userAgent: String? = null
+    ) {
         // Best-effort: try DownloadManager as MP4-like progressive download.
-        downloadMp4(context, url)
+        downloadMp4(
+            context = context,
+            url = url,
+            pageTitle = pageTitle,
+            pageUrl = pageUrl,
+            userAgent = userAgent
+        )
     }
-
-    private fun buildFilename(url: String): String {
-        val host = try {
-            URI(url).host?.replace('.', '_') ?: "video"
-        } catch (_: Exception) {
-            "video"
-        }
-        val sanitized = sanitize("${host}_${System.currentTimeMillis()}")
-        return "$sanitized.mp4"
-    }
-
-    private fun sanitize(input: String): String =
-        input.replace(Regex("""[^\w\-.]"""), "_")
 
     /** Mobile Chrome on Android — preferred default over desktop Chrome UA. */
     const val MOBILE_CHROME_UA =

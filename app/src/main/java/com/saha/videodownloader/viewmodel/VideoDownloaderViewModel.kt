@@ -53,9 +53,25 @@ class VideoDownloaderViewModel(application: Application) : AndroidViewModel(appl
     private val _currentPageUrl = MutableStateFlow<String?>(null)
     val currentPageUrl: StateFlow<String?> = _currentPageUrl.asStateFlow()
 
+    /** Document title from WebChromeClient — used for download filenames. */
+    private val _currentPageTitle = MutableStateFlow<String?>(null)
+    val currentPageTitle: StateFlow<String?> = _currentPageTitle.asStateFlow()
+
     fun setCurrentPageUrl(url: String?) {
         if (url.isNullOrBlank() || url == "about:blank") return
+        if (_currentPageUrl.value != url) {
+            // Title belongs to the previous page until onReceivedTitle fires.
+            _currentPageTitle.value = null
+        }
         _currentPageUrl.value = url
+    }
+
+    fun setCurrentPageTitle(title: String?) {
+        val trimmed = title?.trim().orEmpty()
+        if (trimmed.isEmpty() || trimmed.equals("about:blank", true)) {
+            return
+        }
+        _currentPageTitle.value = trimmed
     }
 
     /**
@@ -69,11 +85,13 @@ class VideoDownloaderViewModel(application: Application) : AndroidViewModel(appl
         }
         if (!added) return
 
+        val pageUrl = _currentPageUrl.value
         _detectedVideos.update { current ->
             current + DetectedVideoUrl(
                 url = url,
                 type = type,
                 detectedAt = System.currentTimeMillis(),
+                pageUrl = pageUrl,
                 metaState = VideoMetaState.PENDING
             )
         }
@@ -87,6 +105,57 @@ class VideoDownloaderViewModel(application: Application) : AndroidViewModel(appl
             seenUrls.clear()
         }
         _detectedVideos.value = emptyList()
+    }
+
+    /**
+     * Drops detections that came from other pages so the list only shows
+     * videos found on the current WebView page.
+     */
+    fun keepOnlyCurrentPageVideos(): Int {
+        val currentKey = pageKey(_currentPageUrl.value)
+        if (currentKey == null) {
+            val removed = _detectedVideos.value.size
+            clearDetectedUrls()
+            return removed
+        }
+
+        val before = _detectedVideos.value
+        val kept = before.filter { pageKey(it.pageUrl) == currentKey }
+        val removedUrls = before.map { it.url }.toSet() - kept.map { it.url }.toSet()
+        if (removedUrls.isEmpty()) return 0
+
+        removedUrls.forEach { url ->
+            probeJobs.remove(url)?.cancel()
+        }
+        synchronized(seenUrls) {
+            seenUrls.clear()
+            seenUrls.addAll(kept.map { it.url })
+        }
+        _detectedVideos.value = kept
+        return removedUrls.size
+    }
+
+    fun hasDetectionsFromOtherPages(): Boolean {
+        val currentKey = pageKey(_currentPageUrl.value) ?: return _detectedVideos.value.isNotEmpty()
+        return _detectedVideos.value.any { pageKey(it.pageUrl) != currentKey }
+    }
+
+    private fun pageKey(url: String?): String? {
+        if (url.isNullOrBlank() || url == "about:blank") return null
+        return try {
+            val uri = java.net.URI(url)
+            buildString {
+                append(uri.scheme?.lowercase() ?: "https")
+                append("://")
+                append(uri.host?.lowercase().orEmpty())
+                if (uri.port > 0) append(":").append(uri.port)
+                append(uri.path.orEmpty().ifEmpty { "/" })
+                // Ignore fragment; keep query — same path with different ?id= is another "page".
+                if (!uri.query.isNullOrBlank()) append("?").append(uri.query)
+            }
+        } catch (_: Exception) {
+            url.substringBefore('#').trimEnd('/')
+        }
     }
 
     fun setPageLoading(loading: Boolean) {
