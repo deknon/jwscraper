@@ -20,7 +20,6 @@ import com.arthenica.ffmpegkit.Statistics
 import com.saha.videodownloader.MainActivity
 import com.saha.videodownloader.R
 import java.io.File
-import java.net.URI
 import java.util.UUID
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicLong

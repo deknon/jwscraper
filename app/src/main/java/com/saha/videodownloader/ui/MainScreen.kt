@@ -107,7 +107,12 @@ fun MainScreen(
     val recentUrls by viewModel.recentUrls.collectAsStateWithLifecycle()
     val useDesktopUa by viewModel.useDesktopUa.collectAsStateWithLifecycle()
     val reloadToken by viewModel.reloadToken.collectAsStateWithLifecycle()
+    val currentPageUrlState by viewModel.currentPageUrl.collectAsStateWithLifecycle()
     val ffmpegJobs by FfmpegJobTracker.snapshot.collectAsStateWithLifecycle()
+
+    val canClearPrevious = remember(detectedVideos, currentPageUrlState) {
+        viewModel.hasDetectionsFromOtherPages()
+    }
 
     var urlInput by remember { mutableStateOf(initialUrl?.takeIf { it.isNotBlank() } ?: "https://") }
     var webViewLoadUrl by remember { mutableStateOf<String?>(null) }
@@ -238,6 +243,26 @@ fun MainScreen(
                     videos = detectedVideos,
                     expanded = listExpanded,
                     onExpandedChange = { listExpanded = it },
+                    onClearPrevious = {
+                        if (canClearPrevious) {
+                            val removed = viewModel.keepOnlyCurrentPageVideos()
+                            scope.launch {
+                                snackbarHostState.showSnackbar(
+                                    if (removed > 0) {
+                                        "ล้างรายการเก่าแล้ว ($removed) — เหลือเฉพาะหน้านี้"
+                                    } else {
+                                        "ไม่มีรายการจากหน้าอื่น"
+                                    }
+                                )
+                            }
+                        } else {
+                            viewModel.clearDetectedUrls()
+                            scope.launch {
+                                snackbarHostState.showSnackbar("ล้างรายการวิดีโอแล้ว")
+                            }
+                        }
+                    },
+                    canClearPrevious = canClearPrevious,
                     onDownloadItem = { item ->
                         // Stay on the WebView — never navigate to the downloads library.
                         listExpanded = false
@@ -703,6 +728,8 @@ private fun DetectedListSection(
     videos: List<DetectedVideoUrl>,
     expanded: Boolean,
     onExpandedChange: (Boolean) -> Unit,
+    onClearPrevious: () -> Unit,
+    canClearPrevious: Boolean,
     onDownloadItem: (DetectedVideoUrl) -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -715,28 +742,47 @@ private fun DetectedListSection(
             modifier = Modifier
                 .fillMaxWidth()
                 .heightIn(min = 40.dp)
-                .clip(RoundedCornerShape(8.dp))
-                .clickable { onExpandedChange(!expanded) }
                 .padding(horizontal = 4.dp, vertical = 0.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Text(
-                text = if (expanded) "▾" else "▸",
-                modifier = Modifier.padding(end = 6.dp),
-                fontSize = 14.sp
-            )
-            Text(
-                text = "วิดีโอ (${videos.size})",
-                style = MaterialTheme.typography.labelLarge,
-                fontWeight = FontWeight.SemiBold,
-                modifier = Modifier.weight(1f)
-            )
-            if (videos.isNotEmpty() && !expanded) {
+            Row(
+                modifier = Modifier
+                    .weight(1f)
+                    .clip(RoundedCornerShape(8.dp))
+                    .clickable { onExpandedChange(!expanded) }
+                    .padding(vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
                 Text(
-                    text = "แตะเพื่อดาวน์โหลด",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                    text = if (expanded) "▾" else "▸",
+                    modifier = Modifier.padding(end = 6.dp),
+                    fontSize = 14.sp
                 )
+                Text(
+                    text = "วิดีโอ (${videos.size})",
+                    style = MaterialTheme.typography.labelLarge,
+                    fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier.weight(1f)
+                )
+                if (videos.isNotEmpty() && !expanded && !canClearPrevious) {
+                    Text(
+                        text = "แตะเพื่อดาวน์โหลด",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+            if (videos.isNotEmpty()) {
+                TextButton(
+                    onClick = onClearPrevious,
+                    contentPadding = ButtonDefaults.TextButtonContentPadding
+                ) {
+                    Text(
+                        text = if (canClearPrevious) "ล้างเก่า" else "ล้าง",
+                        fontSize = 12.sp,
+                        maxLines = 1
+                    )
+                }
             }
         }
 

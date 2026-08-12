@@ -4,6 +4,8 @@ data class DetectedVideoUrl(
     val url: String,
     val type: VideoType,
     val detectedAt: Long,
+    /** Page URL in the WebView when this media URL was first seen. */
+    val pageUrl: String? = null,
     val contentLengthBytes: Long? = null,
     val durationMs: Long? = null,
     /** True when [contentLengthBytes] is estimated (e.g. HLS bandwidth × duration). */
