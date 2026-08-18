@@ -55,13 +55,23 @@ object Media3DownloadUtil {
             getDatabaseProvider(appContext),
             getDownloadCache(appContext),
             buildHttpDataSourceFactory(),
-            Executors.newFixedThreadPool(/* nThreads = */ 2)
+            Executors.newFixedThreadPool(/* nThreads = */ DownloadSettingsStore.MAX_CONCURRENT)
         ).apply {
-            maxParallelDownloads = 2
+            maxParallelDownloads = DownloadSettingsStore.getMaxConcurrent(appContext)
             requirements = Requirements(Requirements.NETWORK)
         }
         downloadManager = manager
         return manager
+    }
+
+    fun applyMaxParallelDownloads(context: Context, max: Int) {
+        val clamped = max.coerceIn(
+            DownloadSettingsStore.MIN_CONCURRENT,
+            DownloadSettingsStore.MAX_CONCURRENT
+        )
+        runCatching {
+            getDownloadManager(context).maxParallelDownloads = clamped
+        }
     }
 
     fun buildHttpDataSourceFactory(): DataSource.Factory =

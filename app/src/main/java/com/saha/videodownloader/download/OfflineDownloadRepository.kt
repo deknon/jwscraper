@@ -69,12 +69,17 @@ class OfflineDownloadRepository(context: Context) {
     }
 
     fun cancelFfmpegJob(id: String) {
-        val sessionId = FfmpegJobTracker.get(id)?.sessionId
+        val job = FfmpegJobTracker.get(id)
+        if (job?.state == LibraryDownload.State.QUEUED) {
+            FfmpegJobTracker.remove(id)
+            MuxJobQueue.onJobCancelled(appContext, id)
+            return
+        }
+        val sessionId = job?.sessionId
         if (sessionId != null) {
             runCatching { FFmpegKit.cancel(sessionId) }
         }
         FfmpegJobTracker.remove(id)
-        // Ask the mux service to drop its foreground notification.
         runCatching {
             appContext.startService(
                 android.content.Intent(appContext, FfmpegMuxService::class.java).apply {
@@ -89,12 +94,14 @@ class OfflineDownloadRepository(context: Context) {
     fun retryFfmpegJob(id: String, sourceUrl: String) {
         val previous = FfmpegJobTracker.get(id)
         FfmpegJobTracker.remove(id)
+        MuxJobQueue.onJobCancelled(appContext, id)
         if (sourceUrl.isNotBlank()) {
             FfmpegMuxService.start(
                 context = appContext,
                 url = sourceUrl,
                 userAgent = previous?.userAgent,
-                refererUrl = previous?.refererUrl
+                refererUrl = previous?.refererUrl,
+                pageTitle = previous?.pageTitle
             )
         }
     }

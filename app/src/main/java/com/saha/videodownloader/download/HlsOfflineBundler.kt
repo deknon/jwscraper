@@ -5,6 +5,10 @@ import java.io.File
 import java.net.HttpURLConnection
 import java.net.URI
 import java.net.URL
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.ExecutionException
+import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * Downloads every HLS segment / key / init map referenced by a local playlist
@@ -24,6 +28,7 @@ object HlsOfflineBundler {
         absolutePlaylist: File,
         workDir: File,
         headers: Map<String, String>,
+        parallelDownloads: Int = 3,
         onProgress: (done: Int, total: Int) -> Unit
     ): Bundle {
         val segDir = File(workDir, "segs_${System.currentTimeMillis()}").apply {
@@ -54,31 +59,40 @@ object HlsOfflineBundler {
         }
         if (remoteLines.size > MAX_SEGMENTS) {
             throw IllegalStateException(
-                "playlist ยาวเกิน ($MAX_SEGMENTS segments) — ยังไม่รองรับไลฟ์ยาวมาก"
+                "playlist ยาวเกิน ($MAX_SEGMENTS segments) — ลองแบ่งตอน/ลดคุณภาพ"
             )
         }
 
-        val urlToLocal = LinkedHashMap<String, File>()
-        var done = 0
-        val total = remoteLines.map { it.second }.toSet().size
-
-        remoteLines.forEach { (_, url) ->
-            if (urlToLocal.containsKey(url)) {
-                done = urlToLocal.size
-                onProgress(done, total)
-                return@forEach
+        val uniqueUrls = remoteLines.map { it.second }.distinct()
+        val total = uniqueUrls.size
+        val urlToLocal = ConcurrentHashMap<String, File>()
+        val doneCount = AtomicInteger(0)
+        val poolSize = parallelDownloads.coerceIn(1, 6)
+        val pool = Executors.newFixedThreadPool(poolSize)
+        try {
+            val futures = uniqueUrls.mapIndexed { index, url ->
+                pool.submit {
+                    val provisional = File(
+                        segDir,
+                        "p${index.toString().padStart(5, '0')}.bin"
+                    )
+                    downloadToFile(url, headers, provisional)
+                    val local = renameByContent(provisional, index, url)
+                    urlToLocal[url] = local
+                    val done = doneCount.incrementAndGet()
+                    onProgress(done, total)
+                }
             }
-            val provisional = File(
-                segDir,
-                "p${urlToLocal.size.toString().padStart(5, '0')}.bin"
-            )
-            downloadToFile(url, headers, provisional)
-            // CDNs often disguise MPEG-TS/fMP4 as .jpg/.txt — rename by magic bytes
-            // so FFmpeg's HLS demuxer accepts the local files.
-            val local = renameByContent(provisional, urlToLocal.size, url)
-            urlToLocal[url] = local
-            done = urlToLocal.size
-            onProgress(done, total)
+            futures.forEach { future ->
+                try {
+                    future.get()
+                } catch (e: ExecutionException) {
+                    pool.shutdownNow()
+                    throw (e.cause as? Exception) ?: e
+                }
+            }
+        } finally {
+            pool.shutdownNow()
         }
 
         val rewritten = lines.map { line ->
@@ -114,8 +128,8 @@ object HlsOfflineBundler {
         while (redirects < 5) {
             val conn = (URL(current).openConnection() as HttpURLConnection).apply {
                 instanceFollowRedirects = false
-                connectTimeout = 30_000
-                readTimeout = 60_000
+                connectTimeout = 60_000
+                readTimeout = 180_000
                 requestMethod = "GET"
                 useCaches = false
                 setRequestProperty("Connection", "close")
@@ -139,7 +153,15 @@ object HlsOfflineBundler {
                     throw IllegalStateException("HTTP $code ตอนดาวน์โหลด segment")
                 }
                 conn.inputStream.use { input ->
-                    dest.outputStream().use { output -> input.copyTo(output) }
+                    dest.outputStream().use { output ->
+                        val buffer = ByteArray(256 * 1024)
+                        while (true) {
+                            val read = input.read(buffer)
+                            if (read <= 0) break
+                            output.write(buffer, 0, read)
+                        }
+                        output.flush()
+                    }
                 }
                 if (dest.length() <= 0L) {
                     dest.delete()
@@ -241,6 +263,6 @@ object HlsOfflineBundler {
         }
     }
 
-    private const val MAX_SEGMENTS = 1500
+    private const val MAX_SEGMENTS = 8000
     private const val TAG = "HlsOfflineBundler"
 }

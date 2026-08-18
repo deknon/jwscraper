@@ -4,7 +4,6 @@ import android.app.AlertDialog
 import android.app.DownloadManager
 import android.content.Context
 import android.net.Uri
-import android.os.Build
 import android.os.Environment
 import android.widget.Toast
 import com.saha.videodownloader.util.BatteryOptimizationPrompt
@@ -48,17 +47,21 @@ object DownloadHelper {
             addRequestHeader("User-Agent", ua)
             pageUrl?.takeIf { it.startsWith("http") }?.let { addRequestHeader("Referer", it) }
 
-            if (Build.VERSION.SDK_INT <= Build.VERSION_CODES.P) {
-                // API 28 and below: explicit public Downloads path + WRITE_EXTERNAL_STORAGE.
-                setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, filename)
-            }
-            // API 29+: omit setDestination* — DownloadManager uses MediaStore / scoped storage.
+            // Always pin to Download/saha vdo download (works on API 24+ via DownloadManager).
+            setDestinationInExternalPublicDir(
+                Environment.DIRECTORY_DOWNLOADS,
+                DownloadPaths.destinationPath(filename)
+            )
         }
 
         val downloadManager =
             context.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
         downloadManager.enqueue(request)
-        Toast.makeText(context, "เริ่มดาวน์โหลด: $filename", Toast.LENGTH_SHORT).show()
+        Toast.makeText(
+            context,
+            "เริ่มดาวน์โหลด: $filename\n→ Download/${DownloadPaths.SUBFOLDER}",
+            Toast.LENGTH_SHORT
+        ).show()
     }
 
     /**
@@ -76,7 +79,7 @@ object DownloadHelper {
         pageTitle: String? = null
     ) {
         val options = arrayOf(
-            "Mux เป็น MP4 (ffmpeg) — ไฟล์ใน Downloads",
+            "Mux เป็น MP4 (ffmpeg) — ไฟล์ใน Download/${DownloadPaths.SUBFOLDER}",
             "Media3 offline cache — เล่นในแอป"
         )
         AlertDialog.Builder(context)

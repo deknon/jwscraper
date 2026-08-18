@@ -10,9 +10,11 @@ import java.io.File
 import java.io.FileInputStream
 
 /**
- * Publishes a local muxed file into the public Downloads collection.
+ * Publishes a local muxed file into public Downloads/`[DownloadPaths.SUBFOLDER]`.
  */
 object FfmpegPublishHelper {
+
+    private const val COPY_BUFFER_BYTES = 256 * 1024
 
     fun publishToDownloads(context: Context, source: File, filename: String): Uri? {
         return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
@@ -26,6 +28,7 @@ object FfmpegPublishHelper {
         val values = ContentValues().apply {
             put(MediaStore.Downloads.DISPLAY_NAME, filename)
             put(MediaStore.Downloads.MIME_TYPE, "video/mp4")
+            put(MediaStore.Downloads.RELATIVE_PATH, DownloadPaths.MEDIA_STORE_RELATIVE_PATH)
             put(MediaStore.Downloads.IS_PENDING, 1)
         }
         val resolver = context.contentResolver
@@ -33,7 +36,15 @@ object FfmpegPublishHelper {
         val itemUri = resolver.insert(collection, values) ?: return null
         return try {
             resolver.openOutputStream(itemUri)?.use { out ->
-                FileInputStream(source).use { input -> input.copyTo(out) }
+                FileInputStream(source).use { input ->
+                    val buffer = ByteArray(COPY_BUFFER_BYTES)
+                    while (true) {
+                        val read = input.read(buffer)
+                        if (read <= 0) break
+                        out.write(buffer, 0, read)
+                    }
+                    out.flush()
+                }
             } ?: return null
             values.clear()
             values.put(MediaStore.Downloads.IS_PENDING, 0)
@@ -49,10 +60,21 @@ object FfmpegPublishHelper {
     private fun publishLegacyPublicDownloads(source: File, filename: String): Uri? {
         val downloads =
             Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
-        if (!downloads.exists() && !downloads.mkdirs()) return null
-        val dest = File(downloads, filename)
+        val folder = File(downloads, DownloadPaths.SUBFOLDER)
+        if (!folder.exists() && !folder.mkdirs()) return null
+        val dest = File(folder, filename)
         return try {
-            source.copyTo(dest, overwrite = true)
+            source.inputStream().use { input ->
+                dest.outputStream().use { output ->
+                    val buffer = ByteArray(COPY_BUFFER_BYTES)
+                    while (true) {
+                        val read = input.read(buffer)
+                        if (read <= 0) break
+                        output.write(buffer, 0, read)
+                    }
+                    output.flush()
+                }
+            }
             Uri.fromFile(dest)
         } catch (_: Exception) {
             null

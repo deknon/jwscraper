@@ -30,6 +30,7 @@ object FfmpegJobTracker {
         val message: String? = null,
         val refererUrl: String? = null,
         val userAgent: String? = null,
+        val pageTitle: String? = null,
         val updatedAtMs: Long = System.currentTimeMillis()
     )
 
@@ -50,12 +51,35 @@ object FfmpegJobTracker {
         }
     }
 
+    fun enqueue(
+        id: String,
+        title: String,
+        sourceUrl: String,
+        refererUrl: String? = null,
+        userAgent: String? = null,
+        pageTitle: String? = null
+    ) {
+        jobs[id] = Job(
+            id = id,
+            title = title,
+            sourceUrl = sourceUrl,
+            state = LibraryDownload.State.QUEUED,
+            progressPercent = 0f,
+            message = "รอคิว…",
+            refererUrl = refererUrl,
+            userAgent = userAgent,
+            pageTitle = pageTitle
+        )
+        publish()
+    }
+
     fun start(
         id: String,
         title: String,
         sourceUrl: String,
         refererUrl: String? = null,
-        userAgent: String? = null
+        userAgent: String? = null,
+        pageTitle: String? = null
     ) {
         jobs[id] = Job(
             id = id,
@@ -65,9 +89,25 @@ object FfmpegJobTracker {
             progressPercent = 0f,
             message = "เริ่ม mux…",
             refererUrl = refererUrl,
-            userAgent = userAgent
+            userAgent = userAgent,
+            pageTitle = pageTitle
         )
         publish()
+    }
+
+    fun nextQueued(): Job? =
+        jobs.values
+            .filter { it.state == LibraryDownload.State.QUEUED }
+            .minByOrNull { it.updatedAtMs }
+
+    fun markRunning(id: String) {
+        update(id) {
+            it.copy(
+                state = LibraryDownload.State.DOWNLOADING,
+                message = "เริ่ม mux…",
+                updatedAtMs = System.currentTimeMillis()
+            )
+        }
     }
 
     fun bindSession(id: String, sessionId: Long) {
@@ -159,6 +199,7 @@ object FfmpegJobTracker {
                     .put("message", job.message)
                     .put("refererUrl", job.refererUrl)
                     .put("userAgent", job.userAgent)
+                    .put("pageTitle", job.pageTitle)
                     .put("updatedAtMs", job.updatedAtMs)
             )
         }
@@ -196,6 +237,11 @@ object FfmpegJobTracker {
                         null
                     } else {
                         obj.optString("userAgent").takeIf { it.isNotBlank() }
+                    },
+                    pageTitle = if (obj.isNull("pageTitle")) {
+                        null
+                    } else {
+                        obj.optString("pageTitle").takeIf { it.isNotBlank() }
                     },
                     updatedAtMs = obj.optLong("updatedAtMs", System.currentTimeMillis())
                 )

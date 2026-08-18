@@ -3,6 +3,7 @@ package com.saha.videodownloader.viewmodel
 import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.saha.videodownloader.download.DownloadSettingsStore
 import com.saha.videodownloader.download.OfflineDownloadRepository
 import com.saha.videodownloader.model.LibraryDownload
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -15,14 +16,24 @@ class DownloadsViewModel(application: Application) : AndroidViewModel(applicatio
 
     private val repository = OfflineDownloadRepository(application)
 
+    init {
+        DownloadSettingsStore.init(application)
+    }
+
     val downloads: StateFlow<List<LibraryDownload>> =
         repository.observeLibrary()
             .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+
+    val maxConcurrent: StateFlow<Int> = DownloadSettingsStore.maxConcurrent
 
     private val _playingId = MutableStateFlow<String?>(null)
     val playingId: StateFlow<String?> = _playingId.asStateFlow()
 
     fun repository(): OfflineDownloadRepository = repository
+
+    fun setMaxConcurrent(value: Int) {
+        DownloadSettingsStore.setMaxConcurrent(getApplication(), value)
+    }
 
     fun play(id: String) {
         _playingId.value = id
