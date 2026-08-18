@@ -77,8 +77,8 @@ object HlsPlaylistPreparer {
         while (redirects < 5) {
             val conn = (URL(current).openConnection() as HttpURLConnection).apply {
                 instanceFollowRedirects = false
-                connectTimeout = 20_000
-                readTimeout = 20_000
+                connectTimeout = 45_000
+                readTimeout = 60_000
                 requestMethod = "GET"
                 useCaches = false
                 setRequestProperty("Connection", "close")

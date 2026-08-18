@@ -20,28 +20,30 @@ import com.arthenica.ffmpegkit.Statistics
 import com.saha.videodownloader.MainActivity
 import com.saha.videodownloader.R
 import java.io.File
-import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
-import java.util.concurrent.atomic.AtomicReference
 
 /**
  * Foreground service that runs ffmpeg HLS→MP4 mux.
  *
- * Important on Xiaomi / HyperOS (e.g. Xiaomi 14, Android 16): background
- * processes are aggressively killed — keeping a visible FGS notification
- * greatly improves survival while muxing.
+ * Supports multiple concurrent jobs (see [DownloadSettingsStore]); each job uses
+ * its own work directory and notification id. The service stays foreground while
+ * any job is active.
  */
 class FfmpegMuxService : Service() {
 
-    private val activeSessionId = AtomicReference<Long?>(null)
-    private val prepareExecutor = Executors.newSingleThreadExecutor()
-    private val localPlaylistRef = AtomicReference<File?>(null)
-    private val offlineTempDirRef = AtomicReference<File?>(null)
+    private val sessionByJob = ConcurrentHashMap<String, Long>()
+    private val prepareExecutor = Executors.newFixedThreadPool(DownloadSettingsStore.MAX_CONCURRENT)
+    private val activeJobs = AtomicInteger(0)
+    private val tempDirsByJob = ConcurrentHashMap<String, File>()
+    private val playlistsByJob = ConcurrentHashMap<String, File>()
 
     override fun onCreate() {
         super.onCreate()
         FfmpegJobTracker.init(this)
+        DownloadSettingsStore.init(this)
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -50,43 +52,32 @@ class FfmpegMuxService : Service() {
         when (intent?.action) {
             ACTION_CANCEL -> {
                 val jobId = intent.getStringExtra(EXTRA_JOB_ID)
-                val sessionId = activeSessionId.get()
-                    ?: jobId?.let { FfmpegJobTracker.get(it)?.sessionId }
-                if (sessionId != null) {
-                    runCatching { FFmpegKit.cancel(sessionId) }
-                }
                 if (jobId != null) {
+                    sessionByJob.remove(jobId)?.let { sid ->
+                        runCatching { FFmpegKit.cancel(sid) }
+                    }
                     FfmpegJobTracker.remove(jobId)
+                    cleanupJobFiles(jobId)
+                    finishJobSlot(jobId, removedFromQueue = true)
                 }
-                stopSelfSafely()
                 return START_NOT_STICKY
             }
             ACTION_START, null -> {
                 val url = intent?.getStringExtra(EXTRA_URL)
                 if (url.isNullOrBlank()) {
-                    stopSelfSafely()
                     return START_NOT_STICKY
                 }
-                val jobId = intent.getStringExtra(EXTRA_JOB_ID) ?: "ffmpeg-job:${UUID.randomUUID()}"
+                val jobId = intent.getStringExtra(EXTRA_JOB_ID) ?: return START_NOT_STICKY
                 val filename = intent.getStringExtra(EXTRA_FILENAME)
                     ?: "hls_${System.currentTimeMillis()}.mp4"
                 val userAgent = intent.getStringExtra(EXTRA_USER_AGENT)
                     ?: DownloadHelper.MOBILE_CHROME_UA
                 val refererUrl = intent.getStringExtra(EXTRA_REFERER_URL)
                 val pageTitle = intent.getStringExtra(EXTRA_PAGE_TITLE)
-                if (FfmpegJobTracker.get(jobId) == null) {
-                    FfmpegJobTracker.start(
-                        id = jobId,
-                        title = filename,
-                        sourceUrl = url,
-                        refererUrl = refererUrl,
-                        userAgent = userAgent
-                    )
-                }
                 startMux(jobId, url, filename, userAgent, refererUrl, pageTitle)
             }
         }
-        return START_NOT_STICKY
+        return START_STICKY
     }
 
     private fun startMux(
@@ -97,9 +88,11 @@ class FfmpegMuxService : Service() {
         refererUrl: String?,
         pageTitle: String?
     ) {
+        activeJobs.incrementAndGet()
         try {
             VideoDownloadService.ensureChannel(this)
             val notification = buildNotification(jobId, provisionalFilename, 0, "เริ่ม mux…")
+            // Keep a stable FGS notification; also mirror per-job status.
             ServiceCompat.startForeground(
                 this,
                 NOTIFICATION_ID,
@@ -110,13 +103,14 @@ class FfmpegMuxService : Service() {
                     0
                 }
             )
+            updateNotification(jobId, provisionalFilename, 0, "เริ่ม mux…")
         } catch (t: Throwable) {
             Log.e(TAG, "startForeground failed", t)
             FfmpegJobTracker.fail(
                 jobId,
                 "เริ่ม foreground service ไม่ได้: ${t.message ?: t.javaClass.simpleName}"
             )
-            stopSelfSafely()
+            finishJobSlot(jobId, removedFromQueue = false)
             return
         }
 
@@ -127,11 +121,15 @@ class FfmpegMuxService : Service() {
             val detail = init.exceptionOrNull()?.message ?: "ffmpeg-kit init failed"
             FfmpegJobTracker.fail(jobId, "เริ่ม ffmpeg ไม่ได้: $detail")
             updateNotification(jobId, provisionalFilename, 0, "เริ่ม ffmpeg ไม่ได้", ongoing = false)
-            stopSelfSafely()
+            finishJobSlot(jobId, removedFromQueue = false)
             return
         }
 
-        val workDir = File(cacheDir, "hls_mux").apply { mkdirs() }
+        val jobDirName = jobId.replace(':', '_')
+        val workDir = File(cacheDir, "hls_mux/$jobDirName").apply {
+            if (exists()) deleteRecursively()
+            mkdirs()
+        }
 
         FfmpegJobTracker.updateProgress(jobId, 0f, "กำลังดึง playlist…")
         prepareExecutor.execute {
@@ -164,10 +162,13 @@ class FfmpegMuxService : Service() {
                     ?: throw IllegalStateException(prepared.note)
 
                 FfmpegJobTracker.updateProgress(jobId, 0.02f, "กำลังดาวน์โหลด segments…")
+                val parallel = DownloadSettingsStore.getMaxConcurrent(this)
+                    .coerceIn(1, 4)
                 val bundle = HlsOfflineBundler.bundle(
                     absolutePlaylist = absolutePlaylist,
                     workDir = workDir,
-                    headers = requestHeaders
+                    headers = requestHeaders,
+                    parallelDownloads = parallel
                 ) { done, total ->
                     val fraction = if (total <= 0) 0f else done.toFloat() / total.toFloat()
                     val progress = 0.02f + 0.75f * fraction
@@ -183,14 +184,14 @@ class FfmpegMuxService : Service() {
                         "segments $done/$total"
                     )
                 }
-                localPlaylistRef.set(bundle.localPlaylist)
-                offlineTempDirRef.set(bundle.tempDir)
+                playlistsByJob[jobId] = bundle.localPlaylist
+                tempDirsByJob[jobId] = bundle.tempDir
                 runCatching { absolutePlaylist.delete() }
 
                 val input = bundle.localPlaylist.absolutePath
                 Log.i(TAG, "offline bundle ready: ${bundle.segmentCount} segments → $input")
 
-                val durationMs = AtomicLong(0L) // unknown; stats use time-based fallback
+                val durationMs = AtomicLong(0L)
                 val strategies = buildOfflineMuxStrategies(
                     input = input,
                     outputPath = outputFile.absolutePath
@@ -200,6 +201,7 @@ class FfmpegMuxService : Service() {
                     url = url,
                     filename = filename,
                     outputFile = outputFile,
+                    workDir = workDir,
                     durationMs = durationMs,
                     strategies = strategies,
                     attemptIndex = 0,
@@ -211,8 +213,9 @@ class FfmpegMuxService : Service() {
                     ?: "เตรียม HLS ไม่สำเร็จ"
                 FfmpegJobTracker.fail(jobId, message)
                 updateNotification(jobId, filename, 0, message, ongoing = false)
-                cleanupLocalPlaylist()
-                stopSelfSafely()
+                cleanupJobFiles(jobId)
+                runCatching { workDir.deleteRecursively() }
+                finishJobSlot(jobId, removedFromQueue = false)
             }
         }
     }
@@ -222,6 +225,7 @@ class FfmpegMuxService : Service() {
         url: String,
         filename: String,
         outputFile: File,
+        workDir: File,
         durationMs: AtomicLong,
         strategies: List<MuxStrategy>,
         attemptIndex: Int,
@@ -232,8 +236,9 @@ class FfmpegMuxService : Service() {
             FfmpegJobTracker.fail(jobId, message)
             updateNotification(jobId, filename, 0, message, ongoing = false)
             runCatching { if (outputFile.exists()) outputFile.delete() }
-            cleanupLocalPlaylist()
-            stopSelfSafely()
+            cleanupJobFiles(jobId)
+            runCatching { workDir.deleteRecursively() }
+            finishJobSlot(jobId, removedFromQueue = false)
             return
         }
 
@@ -253,8 +258,17 @@ class FfmpegMuxService : Service() {
                     try {
                         when {
                             ReturnCode.isSuccess(completed.returnCode) -> {
-                                updateNotification(jobId, filename, 99, "กำลังบันทึกไป Downloads…")
-                                FfmpegJobTracker.updateProgress(jobId, 0.99f, "กำลังบันทึกไป Downloads…")
+                                updateNotification(
+                                    jobId,
+                                    filename,
+                                    99,
+                                    "กำลังบันทึกไป Download/${DownloadPaths.SUBFOLDER}…"
+                                )
+                                FfmpegJobTracker.updateProgress(
+                                    jobId,
+                                    0.99f,
+                                    "กำลังบันทึกไป Download/${DownloadPaths.SUBFOLDER}…"
+                                )
                                 val published = FfmpegPublishHelper.publishToDownloads(
                                     this,
                                     outputFile,
@@ -269,24 +283,29 @@ class FfmpegMuxService : Service() {
                                     FfmpegJobTracker.complete(jobId)
                                     updateNotification(jobId, filename, 100, "บันทึกแล้ว", ongoing = false)
                                 } else {
-                                    FfmpegJobTracker.fail(jobId, "mux สำเร็จ แต่คัดลอกไป Downloads ไม่ได้")
+                                    FfmpegJobTracker.fail(
+                                        jobId,
+                                        "mux สำเร็จ แต่คัดลอกไป Download/${DownloadPaths.SUBFOLDER} ไม่ได้"
+                                    )
                                     updateNotification(
                                         jobId,
                                         filename,
                                         0,
-                                        "บันทึก Downloads ไม่สำเร็จ",
+                                        "บันทึกไฟล์ไม่สำเร็จ",
                                         ongoing = false
                                     )
                                 }
                                 runCatching { if (outputFile.exists()) outputFile.delete() }
-                                cleanupLocalPlaylist()
-                                stopSelfSafely()
+                                cleanupJobFiles(jobId)
+                                runCatching { workDir.deleteRecursively() }
+                                finishJobSlot(jobId, removedFromQueue = false)
                             }
                             ReturnCode.isCancel(completed.returnCode) -> {
                                 FfmpegJobTracker.remove(jobId)
                                 runCatching { if (outputFile.exists()) outputFile.delete() }
-                                cleanupLocalPlaylist()
-                                stopSelfSafely()
+                                cleanupJobFiles(jobId)
+                                runCatching { workDir.deleteRecursively() }
+                                finishJobSlot(jobId, removedFromQueue = true)
                             }
                             else -> {
                                 val err = extractFfmpegError(completed)
@@ -306,6 +325,7 @@ class FfmpegMuxService : Service() {
                                     url = url,
                                     filename = filename,
                                     outputFile = outputFile,
+                                    workDir = workDir,
                                     durationMs = durationMs,
                                     strategies = strategies,
                                     attemptIndex = attemptIndex + 1,
@@ -320,8 +340,9 @@ class FfmpegMuxService : Service() {
                             "mux error: ${t.message ?: t.javaClass.simpleName}"
                         )
                         runCatching { if (outputFile.exists()) outputFile.delete() }
-                        cleanupLocalPlaylist()
-                        stopSelfSafely()
+                        cleanupJobFiles(jobId)
+                        runCatching { workDir.deleteRecursively() }
+                        finishJobSlot(jobId, removedFromQueue = false)
                     }
                 },
                 null,
@@ -355,6 +376,7 @@ class FfmpegMuxService : Service() {
                 url = url,
                 filename = filename,
                 outputFile = outputFile,
+                workDir = workDir,
                 durationMs = durationMs,
                 strategies = strategies,
                 attemptIndex = attemptIndex + 1,
@@ -362,7 +384,7 @@ class FfmpegMuxService : Service() {
             )
             return
         }
-        activeSessionId.set(session.sessionId)
+        sessionByJob[jobId] = session.sessionId
         FfmpegJobTracker.bindSession(jobId, session.sessionId)
     }
 
@@ -381,21 +403,25 @@ class FfmpegMuxService : Service() {
         )
         val cancelIntent = PendingIntent.getService(
             this,
-            1,
+            jobId.hashCode(),
             Intent(this, FfmpegMuxService::class.java).apply {
                 action = ACTION_CANCEL
                 putExtra(EXTRA_JOB_ID, jobId)
             },
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
+        val active = MuxJobQueue.activeCount().coerceAtLeast(1)
         val builder = NotificationCompat.Builder(this, VideoDownloadService.CHANNEL_ID)
-            .setContentTitle("HLS → MP4: $title")
+            .setContentTitle(
+                if (active > 1) "ดาวน์โหลด $active งาน · $title" else "HLS → MP4: $title"
+            )
             .setContentText(text)
             .setSmallIcon(R.drawable.ic_download)
             .setContentIntent(openApp)
             .setOnlyAlertOnce(true)
             .setOngoing(ongoing)
             .setPriority(NotificationCompat.PRIORITY_LOW)
+            .setGroup(NOTIFICATION_GROUP)
         if (ongoing) {
             builder.setProgress(100, progress.coerceIn(0, 100), progress <= 0)
             builder.addAction(0, "ยกเลิก", cancelIntent)
@@ -412,27 +438,39 @@ class FfmpegMuxService : Service() {
         text: String,
         ongoing: Boolean = true
     ) {
+        val notification = buildNotification(jobId, title, progress, text, ongoing)
         runCatching {
-            NotificationManagerCompat.from(this).notify(
-                NOTIFICATION_ID,
-                buildNotification(jobId, title, progress, text, ongoing)
-            )
+            NotificationManagerCompat.from(this).notify(notificationIdFor(jobId), notification)
+            // Keep the FGS notification in sync with the latest job update.
+            NotificationManagerCompat.from(this).notify(NOTIFICATION_ID, notification)
         }.onFailure { Log.w(TAG, "notify failed", it) }
     }
 
-    private fun stopSelfSafely() {
-        activeSessionId.set(null)
+    private fun finishJobSlot(jobId: String, removedFromQueue: Boolean) {
+        sessionByJob.remove(jobId)
         runCatching {
-            ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
+            NotificationManagerCompat.from(this).cancel(notificationIdFor(jobId))
         }
-        stopSelf()
+        val remaining = activeJobs.decrementAndGet()
+        if (removedFromQueue) {
+            MuxJobQueue.onJobCancelled(this, jobId)
+        } else {
+            MuxJobQueue.onJobFinished(this, jobId)
+        }
+        if (remaining <= 0) {
+            activeJobs.set(0)
+            runCatching {
+                ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
+            }
+            stopSelf()
+        }
     }
 
-    private fun cleanupLocalPlaylist() {
-        localPlaylistRef.getAndSet(null)?.let { file ->
+    private fun cleanupJobFiles(jobId: String) {
+        playlistsByJob.remove(jobId)?.let { file ->
             runCatching { if (file.exists()) file.delete() }
         }
-        offlineTempDirRef.getAndSet(null)?.let { dir ->
+        tempDirsByJob.remove(jobId)?.let { dir ->
             runCatching { if (dir.exists()) dir.deleteRecursively() }
         }
     }
@@ -450,6 +488,7 @@ class FfmpegMuxService : Service() {
         const val EXTRA_REFERER_URL = "extra_referer_url"
         const val EXTRA_PAGE_TITLE = "extra_page_title"
         private const val NOTIFICATION_ID = 42
+        private const val NOTIFICATION_GROUP = "mux_jobs"
 
         fun start(
             context: Context,
@@ -457,30 +496,30 @@ class FfmpegMuxService : Service() {
             userAgent: String? = null,
             refererUrl: String? = null,
             pageTitle: String? = null
-        ): String {
-            val appContext = context.applicationContext
-            FfmpegJobTracker.init(appContext)
-            val filename = DownloadFilenameResolver.fromHints(
-                mediaUrl = url,
-                pageTitle = pageTitle,
-                defaultExt = ".mp4"
-            )
-            val jobId = "ffmpeg-job:${UUID.randomUUID()}"
-            val ua = userAgent ?: DownloadHelper.MOBILE_CHROME_UA
-            FfmpegJobTracker.start(
-                id = jobId,
-                title = filename,
-                sourceUrl = url,
-                refererUrl = refererUrl,
-                userAgent = ua
-            )
+        ): String = MuxJobQueue.enqueue(
+            context = context,
+            url = url,
+            userAgent = userAgent,
+            refererUrl = refererUrl,
+            pageTitle = pageTitle
+        )
 
+        fun dispatchStart(
+            context: Context,
+            jobId: String,
+            url: String,
+            filename: String,
+            userAgent: String,
+            refererUrl: String?,
+            pageTitle: String?
+        ) {
+            val appContext = context.applicationContext
             val intent = Intent(appContext, FfmpegMuxService::class.java).apply {
                 action = ACTION_START
                 putExtra(EXTRA_URL, url)
                 putExtra(EXTRA_JOB_ID, jobId)
                 putExtra(EXTRA_FILENAME, filename)
-                putExtra(EXTRA_USER_AGENT, ua)
+                putExtra(EXTRA_USER_AGENT, userAgent)
                 putExtra(EXTRA_REFERER_URL, refererUrl)
                 putExtra(EXTRA_PAGE_TITLE, pageTitle)
             }
@@ -492,9 +531,12 @@ class FfmpegMuxService : Service() {
                     jobId,
                     "เริ่ม service ไม่ได้: ${t.message ?: t.javaClass.simpleName}"
                 )
+                MuxJobQueue.onJobFinished(appContext, jobId)
             }
-            return jobId
         }
+
+        private fun notificationIdFor(jobId: String): Int =
+            1000 + (jobId.hashCode() and 0x7fffffff) % 100000
 
         /**
          * Offline-only strategies: playlist + segments are already on disk, so ffmpeg

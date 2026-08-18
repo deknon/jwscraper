@@ -48,6 +48,8 @@ import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.ui.PlayerView
+import com.saha.videodownloader.download.DownloadPaths
+import com.saha.videodownloader.download.DownloadSettingsStore
 import com.saha.videodownloader.download.OfflineDownloadRepository
 import com.saha.videodownloader.model.LibraryDownload
 import com.saha.videodownloader.viewmodel.DownloadsViewModel
@@ -61,6 +63,7 @@ fun DownloadsScreen(
 ) {
     val downloads by viewModel.downloads.collectAsStateWithLifecycle()
     val playingId by viewModel.playingId.collectAsStateWithLifecycle()
+    val maxConcurrent by viewModel.maxConcurrent.collectAsStateWithLifecycle()
     val context = LocalContext.current
     val playingItem = downloads.firstOrNull { it.id == playingId }
 
@@ -89,6 +92,21 @@ fun DownloadsScreen(
                 .padding(padding)
                 .navigationBarsPadding()
         ) {
+            ConcurrentDownloadsSettings(
+                maxConcurrent = maxConcurrent,
+                onChange = { viewModel.setMaxConcurrent(it) },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 12.dp, vertical = 8.dp)
+            )
+            Text(
+                text = "บันทึกไฟล์ที่ Download/${DownloadPaths.SUBFOLDER}",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(horizontal = 12.dp, vertical = 2.dp)
+            )
+            HorizontalDivider()
+
             if (playingItem != null) {
                 OfflinePlayer(
                     item = playingItem,
@@ -150,6 +168,52 @@ fun DownloadsScreen(
                         HorizontalDivider()
                     }
                 }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ConcurrentDownloadsSettings(
+    maxConcurrent: Int,
+    onChange: (Int) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Row(
+        modifier = modifier,
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.SpaceBetween
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = "ดาวน์โหลดพร้อมกันสูงสุด",
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.SemiBold
+            )
+            Text(
+                text = "ใช้กับคิว HLS mux และ Media3",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            OutlinedButton(
+                onClick = { onChange(maxConcurrent - 1) },
+                enabled = maxConcurrent > DownloadSettingsStore.MIN_CONCURRENT
+            ) {
+                Text("−")
+            }
+            Text(
+                text = "$maxConcurrent",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier.padding(horizontal = 12.dp)
+            )
+            OutlinedButton(
+                onClick = { onChange(maxConcurrent + 1) },
+                enabled = maxConcurrent < DownloadSettingsStore.MAX_CONCURRENT
+            ) {
+                Text("+")
             }
         }
     }
