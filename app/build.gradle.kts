@@ -12,8 +12,8 @@ android {
         applicationId = "com.saha.videodownloader"
         minSdk = 24
         targetSdk = 34
-        versionCode = 18
-        versionName = "1.0.18"
+        versionCode = 19
+        versionName = "1.0.19"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
@@ -24,9 +24,24 @@ android {
         }
     }
 
+    // Stable upload key so GitHub release APKs can update over previous installs.
+    // (Default per-machine debug.keystore caused INSTALL conflict between agents.)
+    signingConfigs {
+        create("upload") {
+            storeFile = file("keystore/saha-upload.jks")
+            storePassword = "saha-vdo-upload"
+            keyAlias = "saha"
+            keyPassword = "saha-vdo-upload"
+        }
+    }
+
     buildTypes {
+        debug {
+            signingConfig = signingConfigs.getByName("upload")
+        }
         release {
             isMinifyEnabled = false
+            signingConfig = signingConfigs.getByName("upload")
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
