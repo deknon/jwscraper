@@ -1,9 +1,12 @@
 package com.saha.videodownloader.ui
 
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.Intent
 import android.net.Uri
 import android.view.ViewGroup
 import android.widget.FrameLayout
+import android.widget.Toast
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -161,6 +164,29 @@ fun DownloadsScreen(
                                     }
                                 }
                             },
+                            onCopyPageLink = {
+                                val link = item.pageUrl?.takeIf {
+                                    it.startsWith("http://") || it.startsWith("https://")
+                                }
+                                if (link.isNullOrBlank()) {
+                                    Toast.makeText(
+                                        context,
+                                        "ไม่มีลิ้งค์หน้าเว็บต้นทาง",
+                                        Toast.LENGTH_SHORT
+                                    ).show()
+                                } else {
+                                    val clipboard =
+                                        context.getSystemService(ClipboardManager::class.java)
+                                    clipboard.setPrimaryClip(
+                                        ClipData.newPlainText("page_url", link)
+                                    )
+                                    Toast.makeText(
+                                        context,
+                                        "คัดลอกลิ้งค์ต้นทางแล้ว",
+                                        Toast.LENGTH_SHORT
+                                    ).show()
+                                }
+                            },
                             onCancel = { viewModel.cancelFfmpeg(item) },
                             onRetry = { viewModel.retryFfmpeg(item) },
                             onRemove = { viewModel.remove(item) }
@@ -225,6 +251,7 @@ private fun DownloadRow(
     onPlay: () -> Unit,
     onOpen: () -> Unit,
     onShare: () -> Unit,
+    onCopyPageLink: () -> Unit,
     onCancel: () -> Unit,
     onRetry: () -> Unit,
     onRemove: () -> Unit
@@ -232,6 +259,8 @@ private fun DownloadRow(
     val isActiveJob = item.id.startsWith("ffmpeg-job:") &&
         (item.state == LibraryDownload.State.DOWNLOADING ||
             item.state == LibraryDownload.State.QUEUED)
+    val hasPageLink = !item.pageUrl.isNullOrBlank() &&
+        (item.pageUrl.startsWith("http://") || item.pageUrl.startsWith("https://"))
 
     Column(
         modifier = Modifier
@@ -253,6 +282,15 @@ private fun DownloadRow(
                     overflow = TextOverflow.Ellipsis,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
+                if (hasPageLink) {
+                    Text(
+                        text = item.pageUrl.orEmpty(),
+                        style = MaterialTheme.typography.labelSmall,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                }
             }
             Spacer(modifier = Modifier.width(8.dp))
             AssistChip(
@@ -311,6 +349,11 @@ private fun DownloadRow(
                     OutlinedButton(onClick = onRemove) {
                         Text("ลบ")
                     }
+                }
+            }
+            if (hasPageLink) {
+                OutlinedButton(onClick = onCopyPageLink) {
+                    Text("คัดลอกลิ้งค์")
                 }
             }
             if (item.state == LibraryDownload.State.FAILED && item.id.startsWith("ffmpeg-job:")) {

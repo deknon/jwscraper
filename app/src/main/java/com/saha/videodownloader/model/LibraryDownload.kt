@@ -12,6 +12,8 @@ data class LibraryDownload(
     val progressPercent: Float,
     /** Content URI for ffmpeg/MP4 files; null for Media3 cache entries. */
     val contentUri: String? = null,
+    /** Webpage URL where the media was discovered (for copy / reopen). */
+    val pageUrl: String? = null,
     val updatedAtMs: Long = System.currentTimeMillis(),
     /** Optional live status text (e.g. ffmpeg mux speed). */
     val statusMessage: String? = null

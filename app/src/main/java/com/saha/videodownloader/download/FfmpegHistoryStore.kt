@@ -10,7 +10,8 @@ import org.json.JSONArray
 import org.json.JSONObject
 
 /**
- * Persists ffmpeg mux results so they appear in the downloads library.
+ * Persists completed download results (ffmpeg mux / progressive MP4) for the library
+ * and duplicate-detection before starting a new download.
  */
 class FfmpegHistoryStore(context: Context) {
 
@@ -22,12 +23,17 @@ class FfmpegHistoryStore(context: Context) {
         val title: String,
         val sourceUrl: String,
         val contentUri: String,
+        val pageUrl: String? = null,
         val createdAtMs: Long
     )
 
     fun add(entry: Entry) {
         val current = getAll().toMutableList()
-        current.removeAll { it.id == entry.id || it.contentUri == entry.contentUri }
+        current.removeAll {
+            it.id == entry.id ||
+                it.contentUri == entry.contentUri ||
+                it.sourceUrl == entry.sourceUrl
+        }
         current.add(0, entry)
         save(current.take(MAX_ENTRIES))
         notifyChanged()
@@ -37,6 +43,14 @@ class FfmpegHistoryStore(context: Context) {
         save(getAll().filterNot { it.id == id })
         notifyChanged()
     }
+
+    fun removeByMediaUrl(mediaUrl: String) {
+        save(getAll().filterNot { it.sourceUrl == mediaUrl })
+        notifyChanged()
+    }
+
+    fun findByMediaUrl(mediaUrl: String): Entry? =
+        getAll().firstOrNull { it.sourceUrl == mediaUrl }
 
     fun getAll(): List<Entry> {
         val raw = prefs.getString(KEY_ENTRIES, null) ?: return emptyList()
@@ -50,7 +64,12 @@ class FfmpegHistoryStore(context: Context) {
                             id = obj.getString("id"),
                             title = obj.getString("title"),
                             sourceUrl = obj.getString("sourceUrl"),
-                            contentUri = obj.getString("contentUri"),
+                            contentUri = obj.optString("contentUri", ""),
+                            pageUrl = if (obj.isNull("pageUrl")) {
+                                null
+                            } else {
+                                obj.optString("pageUrl").takeIf { it.isNotBlank() }
+                            },
                             createdAtMs = obj.getLong("createdAtMs")
                         )
                     )
@@ -70,6 +89,7 @@ class FfmpegHistoryStore(context: Context) {
                     .put("title", entry.title)
                     .put("sourceUrl", entry.sourceUrl)
                     .put("contentUri", entry.contentUri)
+                    .put("pageUrl", entry.pageUrl)
                     .put("createdAtMs", entry.createdAtMs)
             )
         }

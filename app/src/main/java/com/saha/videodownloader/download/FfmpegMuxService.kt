@@ -74,7 +74,8 @@ class FfmpegMuxService : Service() {
                     ?: DownloadHelper.MOBILE_CHROME_UA
                 val refererUrl = intent.getStringExtra(EXTRA_REFERER_URL)
                 val pageTitle = intent.getStringExtra(EXTRA_PAGE_TITLE)
-                startMux(jobId, url, filename, userAgent, refererUrl, pageTitle)
+                val forceFilename = intent.getBooleanExtra(EXTRA_FORCE_FILENAME, false)
+                startMux(jobId, url, filename, userAgent, refererUrl, pageTitle, forceFilename)
             }
         }
         return START_STICKY
@@ -86,7 +87,8 @@ class FfmpegMuxService : Service() {
         provisionalFilename: String,
         userAgent: String,
         refererUrl: String?,
-        pageTitle: String?
+        pageTitle: String?,
+        forceFilename: Boolean
     ) {
         activeJobs.incrementAndGet()
         try {
@@ -136,17 +138,19 @@ class FfmpegMuxService : Service() {
             var filename = provisionalFilename
             try {
                 WebViewCookieHelper.flush()
-                filename = DownloadFilenameResolver.resolve(
-                    mediaUrl = url,
-                    pageTitle = pageTitle,
-                    pageUrl = refererUrl,
-                    userAgent = userAgent,
-                    defaultExt = ".mp4",
-                    probeNetwork = true
-                )
-                if (filename != provisionalFilename) {
-                    FfmpegJobTracker.updateTitle(jobId, filename)
-                    updateNotification(jobId, filename, 0, "กำลังดึง playlist…")
+                if (!forceFilename) {
+                    filename = DownloadFilenameResolver.resolve(
+                        mediaUrl = url,
+                        pageTitle = pageTitle,
+                        pageUrl = refererUrl,
+                        userAgent = userAgent,
+                        defaultExt = ".mp4",
+                        probeNetwork = true
+                    )
+                    if (filename != provisionalFilename) {
+                        FfmpegJobTracker.updateTitle(jobId, filename)
+                        updateNotification(jobId, filename, 0, "กำลังดึง playlist…")
+                    }
                 }
                 val outputFile = File(workDir, filename)
                 if (outputFile.exists()) outputFile.delete()
@@ -275,10 +279,12 @@ class FfmpegMuxService : Service() {
                                     filename
                                 )
                                 if (published != null) {
+                                    val pageUrl = FfmpegJobTracker.get(jobId)?.refererUrl
                                     OfflineDownloadRepository(this).recordFfmpegSuccess(
                                         sourceUrl = url,
                                         title = filename,
-                                        contentUri = published.toString()
+                                        contentUri = published.toString(),
+                                        pageUrl = pageUrl
                                     )
                                     FfmpegJobTracker.complete(jobId)
                                     updateNotification(jobId, filename, 100, "บันทึกแล้ว", ongoing = false)
@@ -487,6 +493,7 @@ class FfmpegMuxService : Service() {
         const val EXTRA_USER_AGENT = "extra_user_agent"
         const val EXTRA_REFERER_URL = "extra_referer_url"
         const val EXTRA_PAGE_TITLE = "extra_page_title"
+        const val EXTRA_FORCE_FILENAME = "extra_force_filename"
         private const val NOTIFICATION_ID = 42
         private const val NOTIFICATION_GROUP = "mux_jobs"
 
@@ -495,13 +502,15 @@ class FfmpegMuxService : Service() {
             url: String,
             userAgent: String? = null,
             refererUrl: String? = null,
-            pageTitle: String? = null
+            pageTitle: String? = null,
+            forcedFilename: String? = null
         ): String = MuxJobQueue.enqueue(
             context = context,
             url = url,
             userAgent = userAgent,
             refererUrl = refererUrl,
-            pageTitle = pageTitle
+            pageTitle = pageTitle,
+            forcedFilename = forcedFilename
         )
 
         fun dispatchStart(
@@ -511,7 +520,8 @@ class FfmpegMuxService : Service() {
             filename: String,
             userAgent: String,
             refererUrl: String?,
-            pageTitle: String?
+            pageTitle: String?,
+            forceFilename: Boolean = false
         ) {
             val appContext = context.applicationContext
             val intent = Intent(appContext, FfmpegMuxService::class.java).apply {
@@ -522,6 +532,7 @@ class FfmpegMuxService : Service() {
                 putExtra(EXTRA_USER_AGENT, userAgent)
                 putExtra(EXTRA_REFERER_URL, refererUrl)
                 putExtra(EXTRA_PAGE_TITLE, pageTitle)
+                putExtra(EXTRA_FORCE_FILENAME, forceFilename)
             }
             try {
                 ContextCompat.startForegroundService(appContext, intent)

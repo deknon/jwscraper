@@ -12,6 +12,7 @@ import java.util.concurrent.ConcurrentHashMap
 object MuxJobQueue {
 
     private val activeIds = ConcurrentHashMap.newKeySet<String>()
+    private val lockedFilenameIds = ConcurrentHashMap.newKeySet<String>()
     private val lock = Any()
 
     fun enqueue(
@@ -19,19 +20,25 @@ object MuxJobQueue {
         url: String,
         userAgent: String? = null,
         refererUrl: String? = null,
-        pageTitle: String? = null
+        pageTitle: String? = null,
+        forcedFilename: String? = null
     ): String {
         val appContext = context.applicationContext
         FfmpegJobTracker.init(appContext)
         DownloadSettingsStore.init(appContext)
 
-        val filename = DownloadFilenameResolver.fromHints(
-            mediaUrl = url,
-            pageTitle = pageTitle,
-            defaultExt = ".mp4"
-        )
+        val filename = forcedFilename?.takeIf { it.isNotBlank() }
+            ?: DownloadFilenameResolver.fromHints(
+                mediaUrl = url,
+                pageTitle = pageTitle,
+                defaultExt = ".mp4"
+            )
         val jobId = "ffmpeg-job:${UUID.randomUUID()}"
         val ua = userAgent ?: DownloadHelper.MOBILE_CHROME_UA
+
+        if (!forcedFilename.isNullOrBlank()) {
+            lockedFilenameIds.add(jobId)
+        }
 
         FfmpegJobTracker.enqueue(
             id = jobId,
@@ -41,18 +48,20 @@ object MuxJobQueue {
             userAgent = ua,
             pageTitle = pageTitle
         )
-        Log.i(TAG, "enqueued $jobId ($filename)")
+        Log.i(TAG, "enqueued $jobId ($filename forced=${!forcedFilename.isNullOrBlank()})")
         pump(appContext)
         return jobId
     }
 
     fun onJobFinished(context: Context, jobId: String) {
         activeIds.remove(jobId)
+        lockedFilenameIds.remove(jobId)
         pump(context.applicationContext)
     }
 
     fun onJobCancelled(context: Context, jobId: String) {
         activeIds.remove(jobId)
+        lockedFilenameIds.remove(jobId)
         pump(context.applicationContext)
     }
 
@@ -78,7 +87,8 @@ object MuxJobQueue {
                     filename = next.title,
                     userAgent = next.userAgent ?: DownloadHelper.MOBILE_CHROME_UA,
                     refererUrl = next.refererUrl,
-                    pageTitle = next.pageTitle
+                    pageTitle = next.pageTitle,
+                    forceFilename = lockedFilenameIds.contains(next.id)
                 )
             }
         }
