@@ -15,7 +15,8 @@ class FfmpegHlsDownloadStrategy(
     private val onFinished: (() -> Unit)? = null,
     private val userAgent: String? = null,
     private val refererUrl: String? = null,
-    private val pageTitle: String? = null
+    private val pageTitle: String? = null,
+    private val forcedFilename: String? = null
 ) : HlsDownloadStrategy {
 
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -28,7 +29,8 @@ class FfmpegHlsDownloadStrategy(
             url = url,
             userAgent = userAgent,
             refererUrl = refererUrl,
-            pageTitle = pageTitle
+            pageTitle = pageTitle,
+            forcedFilename = forcedFilename
         )
         mainHandler.post {
             // Service owns the long-running work; clear the button spinner promptly.

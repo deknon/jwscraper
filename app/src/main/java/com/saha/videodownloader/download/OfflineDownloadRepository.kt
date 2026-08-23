@@ -41,6 +41,7 @@ class OfflineDownloadRepository(context: Context) {
                     state = job.state,
                     progressPercent = job.progressPercent,
                     contentUri = null,
+                    pageUrl = job.refererUrl,
                     updatedAtMs = job.updatedAtMs,
                     statusMessage = job.message
                 )
@@ -48,17 +49,43 @@ class OfflineDownloadRepository(context: Context) {
             (media3 + activeFfmpeg + ffmpegHistory).sortedByDescending { it.updatedAtMs }
         }
 
-    fun recordFfmpegSuccess(sourceUrl: String, title: String, contentUri: String) {
+    fun recordFfmpegSuccess(
+        sourceUrl: String,
+        title: String,
+        contentUri: String,
+        pageUrl: String? = null
+    ) {
         historyStore.add(
             FfmpegHistoryStore.Entry(
                 id = "ffmpeg:$contentUri",
                 title = title,
                 sourceUrl = sourceUrl,
                 contentUri = contentUri,
+                pageUrl = pageUrl,
                 createdAtMs = System.currentTimeMillis()
             )
         )
     }
+
+    fun recordProgressiveMp4(
+        sourceUrl: String,
+        title: String,
+        pageUrl: String? = null
+    ) {
+        historyStore.add(
+            FfmpegHistoryStore.Entry(
+                id = "mp4:$sourceUrl",
+                title = title,
+                sourceUrl = sourceUrl,
+                contentUri = "",
+                pageUrl = pageUrl,
+                createdAtMs = System.currentTimeMillis()
+            )
+        )
+    }
+
+    fun findHistoryByMediaUrl(mediaUrl: String): FfmpegHistoryStore.Entry? =
+        historyStore.findByMediaUrl(mediaUrl)
 
     fun removeFfmpegEntry(id: String) {
         if (id.startsWith("ffmpeg-job:")) {
@@ -174,7 +201,8 @@ class OfflineDownloadRepository(context: Context) {
                         kind = LibraryDownload.Kind.FFMPEG_MP4,
                         state = LibraryDownload.State.COMPLETED,
                         progressPercent = 1f,
-                        contentUri = entry.contentUri,
+                        contentUri = entry.contentUri.takeIf { it.isNotBlank() },
+                        pageUrl = entry.pageUrl,
                         updatedAtMs = entry.createdAtMs,
                         statusMessage = null
                     )
