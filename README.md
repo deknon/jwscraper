@@ -8,8 +8,13 @@
    หรือจากแอปอื่นกด **แชร์** แล้วเลือก **ดาวน์โหลดวิดีโอ (saha)** / เปิดลิงก์ด้วยแอปนี้
 2. กดปุ่ม **ไป** — WebView จะโหลดหน้าเว็บ
 3. ใช้ปุ่ม **←** / **รีเฟรช** / **ประวัติ** / **ล้างข้อมูลไซต์** และสลับ Mobile/Desktop site ได้
+   - **หลายแท็บ** — เมนู **⋮ › แท็บใหม่** (สูงสุด 8 แท็บ) หรือปุ่ม **＋** บนแถบแท็บ
+     ลิงก์ `target=_blank` / `window.open` จะเปิดเป็นแท็บใหม่, **⋮ › จัดการแท็บ** เพื่อดู/ปิดทุกแท็บ
+   - **บล็อกโฆษณา** — **⋮ › บล็อกโฆษณา** (เปิดไว้เป็นค่าเริ่มต้น) บล็อกทั้ง request,
+     การ redirect ไปโดเมนโฆษณา, ป๊อปอัปที่ไม่ได้เกิดจากการแตะของผู้ใช้ และลิงก์เด้งไป Play Store
+     (`intent://` / `market://`) — จำนวนที่บล็อกในหน้านั้นแสดงในเมนู
 4. รอให้รายการวิดีโอที่ตรวจพบขึ้นด้านล่าง (ดู badge / Snackbar เมื่อพบรายการใหม่)
-5. ค้นหา/กรองด้วยชิป **ทั้งหมด / MP4 / HLS / อื่นๆ** แล้วเลือก URL — กด **คัดลอก** ได้  
+5. ในรายการที่ตรวจพบ: **แตะแถว** = ดาวน์โหลด, **▶** = Cast / เปิดด้วยแอปอื่น, **⧉** = คัดลอก URL  
    (ตอนดาวน์โหลด/mux หน้าจอจะไม่ดับเอง)
 6. กดปุ่ม **ดาวน์โหลด**
    - **MP4** → ดาวน์โหลดผ่าน `DownloadManager` ไปยังโฟลเดอร์ Downloads
@@ -57,11 +62,19 @@ ABI ที่แพ็กไว้รวม `arm64-v8a` (ตรงกับ Xiao
 |------|---------|
 | `model/DetectedVideoUrl.kt` | โมเดล URL ที่ตรวจพบ + `VideoType` |
 | `model/LibraryDownload.kt` | รายการในหน้า library |
+| `model/TabState.kt` | สถานะของแท็บหนึ่งแท็บ (url, title, loading, opener, crashed) |
 | `webview/VideoUrlMatcher.kt` | pure function จับคู่ URL → ประเภทวิดีโอ (unit-test ได้) |
-| `webview/VideoInterceptingWebViewClient.kt` | ดัก request ใน WebView แล้วส่ง callback (thread-safe) |
-| `viewmodel/VideoDownloaderViewModel.kt` | StateFlow + synchronized set กัน URL ซ้ำ |
+| `webview/VideoInterceptingWebViewClient.kt` | ดัก request ใน WebView แล้วส่ง callback (thread-safe) + บล็อกโฆษณา |
+| `webview/AdBlockFilter.kt` | pure matcher host/subdomain + substring rule (unit-test ได้) |
+| `webview/AdBlockStore.kt` | สวิตช์เปิด-ปิด (SharedPreferences) + โหลด `res/raw/adblock_hosts.txt` |
+| `webview/TabWebViewHolder.kt` | ถือ `WebView` จริงหนึ่งตัวต่อแท็บ (เป็น ViewModel + `MutableContextWrapper`) |
+| `viewmodel/VideoDownloaderViewModel.kt` | StateFlow ของแท็บ + รายการที่ตรวจพบ, synchronized set กัน URL ซ้ำ |
+| `viewmodel/TabListReducer.kt` | pure transition เปิด/ปิด/เลือกแท็บ (unit-test ได้) |
+| `viewmodel/PageKeys.kt` · `viewmodel/DetectionFilters.kt` | pure page-key + ตัวกรองรายการที่ตรวจพบ (unit-test ได้) |
+| `download/CastIntentHelper.kt` | ส่ง URL ที่ตรวจพบไปแอป cast/player ผ่าน Intent (ไม่ใช้ Cast SDK) |
 | `viewmodel/DownloadsViewModel.kt` | รวมสถานะ Media3 + ffmpeg history/jobs |
-| `ui/MainScreen.kt` | Compose UI: TextField, WebView, LazyColumn |
+| `ui/MainScreen.kt` | Compose UI: URL field, viewport ของแท็บ, LazyColumn รายการที่ตรวจพบ |
+| `ui/TabStrip.kt` | แถบแท็บ + dialog จัดการแท็บ |
 | `ui/DownloadsScreen.kt` | library + offline player / progress / เปิด-แชร์ |
 | `download/DownloadHelper.kt` | DownloadManager สำหรับ MP4 + เมนูเลือกโหมด HLS |
 | `download/HlsDownloadStrategy.kt` | interface + `Media3HlsDownloadStrategy` |

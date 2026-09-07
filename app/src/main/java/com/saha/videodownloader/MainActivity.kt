@@ -28,17 +28,59 @@ import androidx.core.util.Consumer
 import com.saha.videodownloader.download.DownloadSettingsStore
 import com.saha.videodownloader.download.FfmpegJobTracker
 import com.saha.videodownloader.download.FfmpegKitLoader
+import com.saha.videodownloader.model.VideoType
 import com.saha.videodownloader.ui.DownloadsScreen
 import com.saha.videodownloader.ui.MainScreen
 import com.saha.videodownloader.ui.theme.SahaVideoDownloaderTheme
 import com.saha.videodownloader.viewmodel.DownloadsViewModel
 import com.saha.videodownloader.viewmodel.VideoDownloaderViewModel
+import com.saha.videodownloader.webview.AdBlockStore
+import com.saha.videodownloader.webview.TabWebViewHolder
 import java.util.concurrent.Executors
 
 class MainActivity : ComponentActivity() {
 
     private val viewModel: VideoDownloaderViewModel by viewModels()
     private val downloadsViewModel: DownloadsViewModel by viewModels()
+
+    /**
+     * Also a ViewModel, so the tabs' WebViews survive Activity recreation
+     * (dark mode / locale) instead of being rebuilt from scratch.
+     */
+    private val tabWebViews: TabWebViewHolder by viewModels()
+
+    /** Bridges WebView callbacks (any tab, off the UI thread) into the ViewModel. */
+    private val tabCallbacks = object : TabWebViewHolder.Callbacks {
+        override fun onPageStarted(tabId: Long, url: String?) =
+            viewModel.onTabPageStarted(tabId, url)
+
+        override fun onPageFinished(tabId: Long, url: String?, canGoBack: Boolean) =
+            viewModel.onTabPageFinished(tabId, url, canGoBack)
+
+        override fun onTitle(tabId: Long, title: String?) =
+            viewModel.setTabTitle(tabId, title)
+
+        override fun onVideoDetected(tabId: Long, url: String, type: VideoType) =
+            viewModel.onVideoUrlDetected(tabId, url, type)
+
+        override fun onAdBlocked(tabId: Long, url: String) =
+            viewModel.onTabAdBlocked(tabId)
+
+        override fun onRendererGone(tabId: Long) =
+            viewModel.onRendererGone(tabId)
+
+        override fun onCreateWindowRequest(openerTabId: Long, isUserGesture: Boolean): Long? {
+            // Ad popups are almost always gesture-less. The ⋮ menu offers a
+            // per-tab override for players that lose the gesture bit.
+            if (!isUserGesture && AdBlockStore.isEnabled(this@MainActivity)) {
+                viewModel.onPopupBlocked()
+                return null
+            }
+            return viewModel.openTab(openerTabId = openerTabId, select = true)
+        }
+
+        override fun onCloseWindowRequest(tabId: Long) = viewModel.closeTab(tabId)
+    }
 
     private val notificationPermissionLauncher =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { /* no-op */ }
@@ -47,6 +89,9 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         FfmpegJobTracker.init(this)
         DownloadSettingsStore.init(this)
+        AdBlockStore.init(this)
+        viewModel.tabDestroyer = tabWebViews::destroyTab
+        tabWebViews.attachActivity(this, tabCallbacks, viewModel.currentUserAgent())
         // Warm native ffmpeg off the UI thread so the first mux is less likely to stall.
         Executors.newSingleThreadExecutor().execute {
             FfmpegKitLoader.ensureReady()
@@ -85,12 +130,35 @@ class MainActivity : ComponentActivity() {
                     } else {
                         MainScreen(
                             viewModel = viewModel,
+                            tabWebViews = tabWebViews,
                             onOpenDownloads = { showDownloads = true }
                         )
                     }
                 }
             }
         }
+    }
+
+    override fun onPause() {
+        // Stops audio/animation in every tab while the app is backgrounded.
+        tabWebViews.pauseAll()
+        super.onPause()
+    }
+
+    override fun onResume() {
+        super.onResume()
+        tabWebViews.resumeTab(viewModel.activeTabId.value)
+    }
+
+    override fun onTrimMemory(level: Int) {
+        super.onTrimMemory(level)
+        tabWebViews.onTrimMemory(level, viewModel.activeTabId.value)
+    }
+
+    override fun onDestroy() {
+        // Rebase the tabs' context wrappers off this Activity before it dies.
+        tabWebViews.detachActivity()
+        super.onDestroy()
     }
 
     override fun onNewIntent(intent: Intent) {

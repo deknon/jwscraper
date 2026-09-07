@@ -1,17 +1,10 @@
 package com.saha.videodownloader.ui
 
-import android.annotation.SuppressLint
 import android.app.Activity
 import android.content.Context
 import android.content.ContextWrapper
-import android.graphics.Bitmap
-import android.view.ViewGroup
 import android.view.WindowManager
-import android.webkit.CookieManager
-import android.webkit.WebChromeClient
-import android.webkit.WebSettings
-import android.webkit.WebStorage
-import android.webkit.WebView
+import android.widget.FrameLayout
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
@@ -21,6 +14,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -57,10 +51,10 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
-import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -80,45 +74,49 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.saha.videodownloader.download.CastIntentHelper
 import com.saha.videodownloader.download.DownloadFilenameResolver
 import com.saha.videodownloader.download.DownloadHelper
 import com.saha.videodownloader.download.FfmpegJobTracker
-import com.saha.videodownloader.download.WebViewCookieHelper
 import com.saha.videodownloader.model.DetectedVideoUrl
 import com.saha.videodownloader.model.LibraryDownload
+import com.saha.videodownloader.model.TabState
 import com.saha.videodownloader.model.VideoMetaState
 import com.saha.videodownloader.model.VideoType
+import com.saha.videodownloader.viewmodel.DetectionFilters
+import com.saha.videodownloader.viewmodel.TabListReducer
 import com.saha.videodownloader.viewmodel.VideoDownloaderViewModel
-import com.saha.videodownloader.webview.VideoInterceptingWebViewClient
+import com.saha.videodownloader.webview.AdBlockStore
+import com.saha.videodownloader.webview.TabWebViewHolder
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun MainScreen(
     viewModel: VideoDownloaderViewModel,
+    tabWebViews: TabWebViewHolder,
     onOpenDownloads: () -> Unit = {},
-    initialUrl: String? = null,
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
+    val tabs by viewModel.tabs.collectAsStateWithLifecycle()
+    val activeTabId by viewModel.activeTabId.collectAsStateWithLifecycle()
     val detectedVideos by viewModel.detectedVideos.collectAsStateWithLifecycle()
-    val isPageLoading by viewModel.isPageLoading.collectAsStateWithLifecycle()
     val isDownloading by viewModel.isDownloading.collectAsStateWithLifecycle()
-    val pendingNavigateUrl by viewModel.pendingNavigateUrl.collectAsStateWithLifecycle()
     val recentUrls by viewModel.recentUrls.collectAsStateWithLifecycle()
     val useDesktopUa by viewModel.useDesktopUa.collectAsStateWithLifecycle()
-    val reloadToken by viewModel.reloadToken.collectAsStateWithLifecycle()
-    val currentPageUrlState by viewModel.currentPageUrl.collectAsStateWithLifecycle()
+    val adBlockEnabled by AdBlockStore.enabled.collectAsStateWithLifecycle()
+    val blockedPopupCount by viewModel.blockedPopupCount.collectAsStateWithLifecycle()
     val ffmpegJobs by FfmpegJobTracker.snapshot.collectAsStateWithLifecycle()
 
-    val canClearPrevious = remember(detectedVideos, currentPageUrlState) {
-        viewModel.hasDetectionsFromOtherPages()
-    }
+    val activeTab: TabState? = tabs.firstOrNull { it.id == activeTabId }
+    val canClearPrevious = DetectionFilters.hasDetectionsFromOtherPages(
+        items = detectedVideos,
+        currentPageUrl = activeTab?.pageUrl
+    )
+    val activeTabDetectedCount = DetectionFilters.countForTab(detectedVideos, activeTabId)
 
-    var urlInput by remember { mutableStateOf(initialUrl?.takeIf { it.isNotBlank() } ?: "https://") }
-    var webViewLoadUrl by remember { mutableStateOf<String?>(null) }
-    var webViewRef by remember { mutableStateOf<WebView?>(null) }
-    var canGoBack by remember { mutableStateOf(false) }
     var showHistory by remember { mutableStateOf(false) }
+    var showTabs by remember { mutableStateOf(false) }
     var listExpanded by remember { mutableStateOf(false) }
     var menuExpanded by remember { mutableStateOf(false) }
     val snackbarHostState = remember { SnackbarHostState() }
@@ -140,43 +138,64 @@ fun MainScreen(
         }
     }
 
-    LaunchedEffect(initialUrl) {
-        val seed = initialUrl?.takeIf { it.isNotBlank() } ?: return@LaunchedEffect
-        val normalized = normalizeUrl(seed)
-        urlInput = normalized
-        viewModel.clearDetectedUrls()
-        viewModel.rememberUrl(normalized)
-        webViewLoadUrl = normalized
+    // Applies queued navigations. A background tab that already has content is
+    // left alone until it is selected, so a UA switch does not reload 8 tabs
+    // at once; a tab that has never loaded anything always loads immediately.
+    LaunchedEffect(activeTabId, tabs.map { it.id to it.pendingLoadUrl }) {
+        tabs.forEach { tab ->
+            val target = tab.pendingLoadUrl ?: return@forEach
+            val webView = tabWebViews.getOrCreate(tab.id, allowAutoplay = !tab.neverSelected)
+            val isFresh = webView?.url.isNullOrBlank()
+            if (tab.id == activeTabId || isFresh) {
+                tabWebViews.loadUrl(tab.id, target)
+                viewModel.consumePendingLoad(tab.id)
+            }
+        }
     }
 
-    LaunchedEffect(pendingNavigateUrl) {
-        val target = pendingNavigateUrl ?: return@LaunchedEffect
-        val normalized = normalizeUrl(target)
-        urlInput = normalized
-        viewModel.clearDetectedUrls()
-        viewModel.rememberUrl(normalized)
-        webViewLoadUrl = normalized
-        viewModel.consumeNavigateRequest()
+    LaunchedEffect(useDesktopUa) {
+        tabWebViews.applyUserAgent(viewModel.currentUserAgent())
+        val active = activeTabId ?: return@LaunchedEffect
+        viewModel.markOtherTabsForReload(active)
+        tabWebViews.reload(active)
     }
 
     val previousCount = remember { mutableStateOf(0) }
-    LaunchedEffect(detectedVideos.size) {
-        if (detectedVideos.isNotEmpty()) {
+    LaunchedEffect(activeTabDetectedCount) {
+        if (activeTabDetectedCount > 0) {
             listExpanded = true
         }
-        if (detectedVideos.size > previousCount.value) {
-            snackbarHostState.showSnackbar("พบวิดีโอแล้ว (${detectedVideos.size})")
+        if (activeTabDetectedCount > previousCount.value) {
+            snackbarHostState.showSnackbar("พบวิดีโอแล้ว ($activeTabDetectedCount)")
         }
-        previousCount.value = detectedVideos.size
+        previousCount.value = activeTabDetectedCount
     }
 
-    BackHandler(enabled = canGoBack) {
-        val webView = webViewRef
-        if (webView != null && webView.canGoBack()) {
-            webView.goBack()
-            canGoBack = webView.canGoBack()
-        } else {
-            canGoBack = false
+    // Back goes back inside the tab, then closes the tab (returning to its
+    // opener), then falls through to the system so the app can exit.
+    BackHandler(enabled = activeTab?.canGoBack == true || tabs.size > 1) {
+        val id = activeTabId
+        if (id != null && tabWebViews.goBack(id)) {
+            viewModel.setTabCanGoBack(id, tabWebViews.canGoBack(id))
+        } else if (tabs.size > 1) {
+            viewModel.closeActiveTab()
+        }
+    }
+
+    fun go(rawUrl: String) {
+        val id = activeTabId ?: return
+        val normalized = normalizeUrl(rawUrl)
+        if (normalized.isEmpty()) return
+        viewModel.requestLoad(id, normalized)
+    }
+
+    fun openNewTab(url: String? = null) {
+        if (viewModel.openTab(url) == null) {
+            Toast.makeText(
+                context,
+                "เปิดได้สูงสุด ${TabListReducer.MAX_TABS} แท็บ",
+                Toast.LENGTH_SHORT
+            ).show()
         }
     }
 
@@ -186,51 +205,129 @@ fun MainScreen(
         modifier = modifier.fillMaxSize(),
         contentWindowInsets = WindowInsets(0, 0, 0, 0),
         topBar = {
-            CompactTopChrome(
-                detectedCount = detectedVideos.size,
-                urlInput = urlInput,
-                onUrlChange = { urlInput = it },
-                canGoBack = canGoBack,
-                onBack = {
-                    webViewRef?.let { webView ->
-                        if (webView.canGoBack()) {
-                            webView.goBack()
-                            canGoBack = webView.canGoBack()
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                color = MaterialTheme.colorScheme.primaryContainer,
+                tonalElevation = 3.dp,
+                shadowElevation = 2.dp
+            ) {
+                Column(modifier = Modifier.fillMaxWidth().statusBarsPadding()) {
+                    CompactChromeRow(
+                        detectedCount = detectedVideos.size,
+                        // Keyed so BasicTextField's caret/selection does not
+                        // carry over from the previous tab's URL.
+                        urlField = {
+                            key(activeTabId) {
+                                CompactUrlField(
+                                    value = activeTab?.urlInput.orEmpty(),
+                                    onValueChange = { text ->
+                                        activeTabId?.let { viewModel.setTabUrlInput(it, text) }
+                                    },
+                                    onGo = { go(activeTab?.urlInput.orEmpty()) },
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .height(36.dp)
+                                )
+                            }
+                        },
+                        canGoBack = activeTab?.canGoBack == true,
+                        onBack = {
+                            activeTabId?.let { id ->
+                                if (tabWebViews.goBack(id)) {
+                                    viewModel.setTabCanGoBack(id, tabWebViews.canGoBack(id))
+                                }
+                            }
+                        },
+                        onGo = { go(activeTab?.urlInput.orEmpty()) },
+                        onOpenDownloads = onOpenDownloads,
+                        menuExpanded = menuExpanded,
+                        onMenuExpandedChange = { menuExpanded = it },
+                        tabCount = tabs.size,
+                        onNewTab = {
+                            menuExpanded = false
+                            openNewTab()
+                        },
+                        onManageTabs = {
+                            menuExpanded = false
+                            showTabs = true
+                        },
+                        useDesktopUa = useDesktopUa,
+                        onToggleDesktopUa = { viewModel.setUseDesktopUa(!useDesktopUa) },
+                        adBlockEnabled = adBlockEnabled,
+                        blockedAdCount = activeTab?.blockedAdCount ?: 0,
+                        onToggleAdBlock = {
+                            menuExpanded = false
+                            val next = !adBlockEnabled
+                            AdBlockStore.setEnabled(context, next)
+                            scope.launch {
+                                snackbarHostState.showSnackbar(
+                                    if (next) {
+                                        "เปิดบล็อกโฆษณา — รีเฟรชเพื่อให้มีผลเต็มที่"
+                                    } else {
+                                        "ปิดบล็อกโฆษณาแล้ว"
+                                    }
+                                )
+                            }
+                        },
+                        blockedPopupCount = blockedPopupCount,
+                        onAllowPopups = {
+                            menuExpanded = false
+                            activeTabId?.let { id ->
+                                tabWebViews.peek(id)
+                                    ?.settings
+                                    ?.javaScriptCanOpenWindowsAutomatically = true
+                                scope.launch {
+                                    snackbarHostState.showSnackbar("อนุญาตป๊อปอัปในแท็บนี้แล้ว")
+                                }
+                            }
+                        },
+                        onHistory = {
+                            menuExpanded = false
+                            showHistory = true
+                        },
+                        onReload = {
+                            menuExpanded = false
+                            activeTabId?.let { id ->
+                                val tab = tabs.firstOrNull { it.id == id }
+                                val crashedUrl = tab?.pageUrl?.takeIf { tab.isCrashed }
+                                if (crashedUrl != null) {
+                                    viewModel.requestLoad(id, crashedUrl)
+                                } else {
+                                    tabWebViews.reload(id)
+                                }
+                            }
+                        },
+                        onClearSiteData = {
+                            menuExpanded = false
+                            tabWebViews.clearSiteData()
+                            viewModel.clearDetectedUrls()
+                            Toast.makeText(
+                                context,
+                                "ล้างคุกกี้/แคชแล้ว (มีผลกับทุกแท็บ)",
+                                Toast.LENGTH_SHORT
+                            ).show()
+                            activeTabId?.let { tabWebViews.reload(it) }
+                        },
+                        onClearDetected = {
+                            menuExpanded = false
+                            viewModel.clearDetectedUrls()
                         }
+                    )
+
+                    AnimatedVisibility(visible = tabs.size > 1) {
+                        TabStrip(
+                            tabs = tabs,
+                            activeTabId = activeTabId,
+                            detectedCountFor = { tabId ->
+                                DetectionFilters.countForTab(detectedVideos, tabId)
+                            },
+                            onSelect = { viewModel.selectTab(it) },
+                            onClose = { viewModel.closeTab(it) },
+                            onNewTab = { openNewTab() }
+                        )
                     }
-                },
-                onGo = {
-                    val normalized = normalizeUrl(urlInput)
-                    urlInput = normalized
-                    viewModel.clearDetectedUrls()
-                    viewModel.rememberUrl(normalized)
-                    webViewLoadUrl = normalized
-                },
-                onOpenDownloads = onOpenDownloads,
-                menuExpanded = menuExpanded,
-                onMenuExpandedChange = { menuExpanded = it },
-                useDesktopUa = useDesktopUa,
-                onToggleDesktopUa = { viewModel.setUseDesktopUa(!useDesktopUa) },
-                onHistory = {
-                    menuExpanded = false
-                    showHistory = true
-                },
-                onReload = {
-                    menuExpanded = false
-                    viewModel.reloadPage()
-                },
-                onClearSiteData = {
-                    menuExpanded = false
-                    clearWebViewData(webViewRef)
-                    viewModel.clearDetectedUrls()
-                    Toast.makeText(context, "ล้างคุกกี้/แคชแล้ว", Toast.LENGTH_SHORT).show()
-                    viewModel.reloadPage()
-                },
-                onClearDetected = {
-                    menuExpanded = false
-                    viewModel.clearDetectedUrls()
                 }
-            )
+            }
         },
         bottomBar = {
             Surface(
@@ -245,7 +342,7 @@ fun MainScreen(
                     onExpandedChange = { listExpanded = it },
                     onClearPrevious = {
                         if (canClearPrevious) {
-                            val removed = viewModel.keepOnlyCurrentPageVideos()
+                            val removed = viewModel.keepOnlyActiveTabVideos()
                             scope.launch {
                                 snackbarHostState.showSnackbar(
                                     if (removed > 0) {
@@ -266,38 +363,13 @@ fun MainScreen(
                     onDownloadItem = { item ->
                         // Stay on the WebView — never navigate to the downloads library.
                         listExpanded = false
-                        val pageUrl = viewModel.currentPageUrl.value
-                            ?: urlInput.takeIf {
-                                it.startsWith("http://") || it.startsWith("https://")
-                            }
-                        val pageTitle = viewModel.currentPageTitle.value
+                        // Prefer the page the item was found on: after navigating
+                        // away, the active tab's URL is the wrong Referer and the
+                        // CDN answers 403.
+                        val pageUrl = item.pageUrl ?: activeTab?.pageUrl
+                        val pageTitle = item.pageTitle ?: activeTab?.title
                         val userAgent = viewModel.currentUserAgent()
                         when (item.type) {
-                            VideoType.MP4 -> {
-                                scope.launch {
-                                    viewModel.setDownloading(true)
-                                    val filename = withContext(Dispatchers.IO) {
-                                        DownloadFilenameResolver.resolve(
-                                            mediaUrl = item.url,
-                                            pageTitle = pageTitle,
-                                            pageUrl = pageUrl,
-                                            userAgent = userAgent,
-                                            defaultExt = ".mp4"
-                                        )
-                                    }
-                                    DownloadHelper.downloadMp4(
-                                        context = context,
-                                        url = item.url,
-                                        suggestedName = filename,
-                                        pageUrl = pageUrl,
-                                        userAgent = userAgent
-                                    )
-                                    viewModel.setDownloading(false)
-                                    snackbarHostState.showSnackbar(
-                                        "เริ่มดาวน์โหลดแล้ว — อยู่หน้าเว็บต่อได้"
-                                    )
-                                }
-                            }
                             VideoType.HLS -> DownloadHelper.handleHlsUrl(
                                 context = context,
                                 url = item.url,
@@ -317,7 +389,7 @@ fun MainScreen(
                                 refererUrl = pageUrl,
                                 pageTitle = pageTitle
                             )
-                            VideoType.UNKNOWN -> {
+                            VideoType.MP4, VideoType.UNKNOWN -> {
                                 scope.launch {
                                     viewModel.setDownloading(true)
                                     val filename = withContext(Dispatchers.IO) {
@@ -344,6 +416,27 @@ fun MainScreen(
                             }
                         }
                     },
+                    onCastItem = { item ->
+                        val ok = CastIntentHelper.castVideo(
+                            context = context,
+                            url = item.url,
+                            type = item.type,
+                            pageUrl = item.pageUrl ?: activeTab?.pageUrl,
+                            userAgent = viewModel.currentUserAgent(),
+                            title = item.pageTitle ?: activeTab?.title
+                        )
+                        if (!ok) {
+                            scope.launch {
+                                snackbarHostState.showSnackbar(
+                                    "ไม่พบแอปที่เล่นวิดีโอได้ — ลองติดตั้ง Web Video Cast / VLC"
+                                )
+                            }
+                        }
+                    },
+                    onCopyItem = { item ->
+                        CastIntentHelper.copyUrl(context, item.url)
+                        scope.launch { snackbarHostState.showSnackbar("คัดลอก URL แล้ว") }
+                    },
                     modifier = Modifier
                         .fillMaxWidth()
                         .navigationBarsPadding()
@@ -359,27 +452,29 @@ fun MainScreen(
                 .clipToBounds()
                 .background(MaterialTheme.colorScheme.background)
         ) {
-            VideoWebView(
-                loadUrl = webViewLoadUrl,
-                userAgent = viewModel.currentUserAgent(),
-                reloadToken = reloadToken,
-                viewModel = viewModel,
-                onWebViewReady = { webViewRef = it },
-                onCanGoBackChanged = { canGoBack = it },
-                onUrlChanged = { current ->
-                    if (!current.isNullOrBlank() && current != "about:blank") {
-                        urlInput = current
-                        viewModel.setCurrentPageUrl(current)
-                    }
+            TabViewport(
+                holder = tabWebViews,
+                tabIds = tabs.map { it.id },
+                activeTabId = activeTabId,
+                autoplayFor = { tabId ->
+                    tabs.firstOrNull { it.id == tabId }?.neverSelected != true
                 },
                 modifier = Modifier
                     .fillMaxSize()
                     .clipToBounds()
             )
 
-            if (webViewLoadUrl.isNullOrBlank() &&
-                (webViewRef?.url.isNullOrBlank() || webViewRef?.url == "about:blank")
-            ) {
+            val shownTab = activeTab
+            if (shownTab != null && shownTab.isCrashed) {
+                CrashedTabNotice(
+                    onReload = {
+                        shownTab.pageUrl
+                            ?.takeIf { it.isNotBlank() }
+                            ?.let { viewModel.requestLoad(shownTab.id, it) }
+                    },
+                    modifier = Modifier.align(Alignment.Center)
+                )
+            } else if (shownTab != null && shownTab.isBlank) {
                 Text(
                     text = "พิมพ์ URL ด้านบน แล้วกด ไป",
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -391,7 +486,7 @@ fun MainScreen(
                 )
             }
 
-            if (isPageLoading || isDownloading) {
+            if (shownTab?.isLoading == true || isDownloading) {
                 LinearProgressIndicator(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -410,146 +505,181 @@ fun MainScreen(
                 urls = recentUrls,
                 onSelect = { selected ->
                     showHistory = false
-                    urlInput = selected
-                    viewModel.clearDetectedUrls()
-                    viewModel.rememberUrl(selected)
-                    webViewLoadUrl = selected
+                    go(selected)
                 },
-                onClear = {
-                    viewModel.clearHistory()
-                },
+                onClear = { viewModel.clearHistory() },
                 onDismiss = { showHistory = false }
+            )
+        }
+
+        if (showTabs) {
+            TabsDialog(
+                tabs = tabs,
+                activeTabId = activeTabId,
+                detectedCountFor = { tabId ->
+                    DetectionFilters.countForTab(detectedVideos, tabId)
+                },
+                onSelect = {
+                    viewModel.selectTab(it)
+                    showTabs = false
+                },
+                onClose = { viewModel.closeTab(it) },
+                onNewTab = {
+                    showTabs = false
+                    openNewTab()
+                },
+                onDismiss = { showTabs = false }
             )
         }
     }
 }
 
 @Composable
-private fun CompactTopChrome(
+private fun CompactChromeRow(
     detectedCount: Int,
-    urlInput: String,
-    onUrlChange: (String) -> Unit,
+    urlField: @Composable RowScope.() -> Unit,
     canGoBack: Boolean,
     onBack: () -> Unit,
     onGo: () -> Unit,
     onOpenDownloads: () -> Unit,
     menuExpanded: Boolean,
     onMenuExpandedChange: (Boolean) -> Unit,
+    tabCount: Int,
+    onNewTab: () -> Unit,
+    onManageTabs: () -> Unit,
     useDesktopUa: Boolean,
     onToggleDesktopUa: () -> Unit,
+    adBlockEnabled: Boolean,
+    blockedAdCount: Int,
+    onToggleAdBlock: () -> Unit,
+    blockedPopupCount: Int,
+    onAllowPopups: () -> Unit,
     onHistory: () -> Unit,
     onReload: () -> Unit,
     onClearSiteData: () -> Unit,
     onClearDetected: () -> Unit,
     modifier: Modifier = Modifier
 ) {
-    // Surface draws behind the status bar; row content is padded below it.
-    Surface(
-        modifier = modifier.fillMaxWidth(),
-        color = MaterialTheme.colorScheme.primaryContainer,
-        tonalElevation = 3.dp,
-        shadowElevation = 2.dp
+    Row(
+        modifier = modifier
+            .fillMaxWidth()
+            .heightIn(min = 48.dp)
+            .padding(horizontal = 4.dp, vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(2.dp)
     ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .statusBarsPadding()
-                .heightIn(min = 48.dp)
-                .padding(horizontal = 4.dp, vertical = 6.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(2.dp)
+        TextButton(
+            onClick = onBack,
+            enabled = canGoBack,
+            modifier = Modifier.size(width = 36.dp, height = 36.dp),
+            contentPadding = ButtonDefaults.TextButtonContentPadding
+        ) {
+            Text("←", fontSize = 18.sp, color = MaterialTheme.colorScheme.onPrimaryContainer)
+        }
+
+        urlField()
+
+        Button(
+            onClick = onGo,
+            modifier = Modifier.height(36.dp),
+            contentPadding = ButtonDefaults.ContentPadding
+        ) {
+            Text("ไป", fontSize = 13.sp)
+        }
+
+        BadgedBox(
+            badge = {
+                if (detectedCount > 0) {
+                    Badge { Text("$detectedCount") }
+                }
+            }
         ) {
             TextButton(
-                onClick = onBack,
-                enabled = canGoBack,
-                modifier = Modifier.size(width = 36.dp, height = 36.dp),
+                onClick = onOpenDownloads,
                 contentPadding = ButtonDefaults.TextButtonContentPadding
             ) {
-                Text("←", fontSize = 18.sp, color = MaterialTheme.colorScheme.onPrimaryContainer)
+                Text(
+                    "รายการ",
+                    fontSize = 12.sp,
+                    maxLines = 1,
+                    color = MaterialTheme.colorScheme.onPrimaryContainer
+                )
             }
+        }
 
-            CompactUrlField(
-                value = urlInput,
-                onValueChange = onUrlChange,
-                onGo = onGo,
-                modifier = Modifier
-                    .weight(1f)
-                    .height(36.dp)
+        TextButton(
+            onClick = { onMenuExpandedChange(true) },
+            modifier = Modifier.size(width = 36.dp, height = 36.dp),
+            contentPadding = ButtonDefaults.TextButtonContentPadding
+        ) {
+            Text("⋮", fontSize = 20.sp, color = MaterialTheme.colorScheme.onPrimaryContainer)
+        }
+
+        DropdownMenu(
+            expanded = menuExpanded,
+            onDismissRequest = { onMenuExpandedChange(false) }
+        ) {
+            DropdownMenuItem(
+                text = { Text("saha Video Downloader", fontWeight = FontWeight.SemiBold) },
+                onClick = { onMenuExpandedChange(false) },
+                enabled = false
             )
-
-            Button(
-                onClick = onGo,
-                modifier = Modifier.height(36.dp),
-                contentPadding = ButtonDefaults.ContentPadding
-            ) {
-                Text("ไป", fontSize = 13.sp)
-            }
-
-            BadgedBox(
-                badge = {
-                    if (detectedCount > 0) {
-                        Badge { Text("$detectedCount") }
-                    }
-                }
-            ) {
-                TextButton(
-                    onClick = onOpenDownloads,
-                    contentPadding = ButtonDefaults.TextButtonContentPadding
-                ) {
+            DropdownMenuItem(
+                text = { Text("แท็บใหม่ ($tabCount/${TabListReducer.MAX_TABS})") },
+                onClick = onNewTab,
+                enabled = tabCount < TabListReducer.MAX_TABS
+            )
+            DropdownMenuItem(
+                text = { Text("จัดการแท็บ") },
+                onClick = onManageTabs
+            )
+            DropdownMenuItem(
+                text = { Text("ประวัติ URL") },
+                onClick = onHistory
+            )
+            DropdownMenuItem(
+                text = { Text("รีเฟรช") },
+                onClick = onReload
+            )
+            DropdownMenuItem(
+                text = {
                     Text(
-                        "รายการ",
-                        fontSize = 12.sp,
-                        maxLines = 1,
-                        color = MaterialTheme.colorScheme.onPrimaryContainer
+                        if (useDesktopUa) "ใช้ Mobile site" else "ใช้ Desktop site"
                     )
+                },
+                onClick = {
+                    onMenuExpandedChange(false)
+                    onToggleDesktopUa()
                 }
-            }
-
-            TextButton(
-                onClick = { onMenuExpandedChange(true) },
-                modifier = Modifier.size(width = 36.dp, height = 36.dp),
-                contentPadding = ButtonDefaults.TextButtonContentPadding
-            ) {
-                Text("⋮", fontSize = 20.sp, color = MaterialTheme.colorScheme.onPrimaryContainer)
-            }
-
-            DropdownMenu(
-                expanded = menuExpanded,
-                onDismissRequest = { onMenuExpandedChange(false) }
-            ) {
+            )
+            DropdownMenuItem(
+                text = {
+                    Text(
+                        buildString {
+                            append("บล็อกโฆษณา: ")
+                            append(if (adBlockEnabled) "เปิด" else "ปิด")
+                            if (adBlockEnabled && blockedAdCount > 0) {
+                                append(" ($blockedAdCount)")
+                            }
+                        }
+                    )
+                },
+                onClick = onToggleAdBlock
+            )
+            if (blockedPopupCount > 0) {
                 DropdownMenuItem(
-                    text = { Text("saha Video Downloader", fontWeight = FontWeight.SemiBold) },
-                    onClick = { onMenuExpandedChange(false) },
-                    enabled = false
-                )
-                DropdownMenuItem(
-                    text = { Text("ประวัติ URL") },
-                    onClick = onHistory
-                )
-                DropdownMenuItem(
-                    text = { Text("รีเฟรช") },
-                    onClick = onReload
-                )
-                DropdownMenuItem(
-                    text = {
-                        Text(
-                            if (useDesktopUa) "ใช้ Mobile site" else "ใช้ Desktop site"
-                        )
-                    },
-                    onClick = {
-                        onMenuExpandedChange(false)
-                        onToggleDesktopUa()
-                    }
-                )
-                DropdownMenuItem(
-                    text = { Text("ล้างข้อมูลไซต์") },
-                    onClick = onClearSiteData
-                )
-                DropdownMenuItem(
-                    text = { Text("ล้างรายการวิดีโอ") },
-                    onClick = onClearDetected
+                    text = { Text("อนุญาตป๊อปอัปในแท็บนี้ ($blockedPopupCount)") },
+                    onClick = onAllowPopups
                 )
             }
+            DropdownMenuItem(
+                text = { Text("ล้างข้อมูลไซต์") },
+                onClick = onClearSiteData
+            )
+            DropdownMenuItem(
+                text = { Text("ล้างรายการวิดีโอ") },
+                onClick = onClearDetected
+            )
         }
     }
 }
@@ -594,6 +724,23 @@ private fun CompactUrlField(
 }
 
 @Composable
+private fun CrashedTabNotice(onReload: () -> Unit, modifier: Modifier = Modifier) {
+    Column(
+        modifier = modifier.padding(24.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        Text(
+            text = "แท็บนี้หยุดทำงาน (หน่วยความจำไม่พอ)",
+            style = MaterialTheme.typography.bodyLarge,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            textAlign = TextAlign.Center
+        )
+        Button(onClick = onReload) { Text("โหลดใหม่") }
+    }
+}
+
+@Composable
 private fun HistoryDialog(
     urls: List<String>,
     onSelect: (String) -> Unit,
@@ -634,92 +781,31 @@ private fun HistoryDialog(
     )
 }
 
-@SuppressLint("SetJavaScriptEnabled")
+/**
+ * One [FrameLayout] holds every tab's WebView; only the active one is visible.
+ * The views are never re-parented on a tab switch — detaching a WebView drops
+ * its surface and stalls `<video>` playback.
+ */
 @Composable
-private fun VideoWebView(
-    loadUrl: String?,
-    userAgent: String,
-    reloadToken: Int,
-    viewModel: VideoDownloaderViewModel,
-    onWebViewReady: (WebView) -> Unit,
-    onCanGoBackChanged: (Boolean) -> Unit,
-    onUrlChanged: (String?) -> Unit,
+private fun TabViewport(
+    holder: TabWebViewHolder,
+    tabIds: List<Long>,
+    activeTabId: Long?,
+    autoplayFor: (Long) -> Boolean,
     modifier: Modifier = Modifier
 ) {
-    val latestViewModel by rememberUpdatedState(viewModel)
-    val latestCanGoBack by rememberUpdatedState(onCanGoBackChanged)
-    val latestUrlChanged by rememberUpdatedState(onUrlChanged)
-    var appliedReloadToken by remember { mutableStateOf(reloadToken) }
-
     AndroidView(
         modifier = modifier.clipToBounds(),
         factory = { context ->
-            WebView(context).apply {
-                layoutParams = ViewGroup.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT,
-                    ViewGroup.LayoutParams.MATCH_PARENT
-                )
-                // Prevent WebView from drawing outside its Compose slot on HyperOS.
+            FrameLayout(context).apply {
                 setBackgroundColor(android.graphics.Color.WHITE)
-                settings.javaScriptEnabled = true
-                settings.domStorageEnabled = true
-                settings.mediaPlaybackRequiresUserGesture = false
-                settings.mixedContentMode = WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE
-                settings.userAgentString = userAgent
-                settings.cacheMode = WebSettings.LOAD_DEFAULT
-                settings.loadWithOverviewMode = true
-                settings.useWideViewPort = true
-                // CDN / JW Player auth cookies are often third-party.
-                WebViewCookieHelper.enableFor(this)
-
-                webViewClient = object : VideoInterceptingWebViewClient(
-                    onVideoUrlDetected = { url, type ->
-                        latestViewModel.onVideoUrlDetected(url, type)
-                    }
-                ) {
-                    override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
-                        super.onPageStarted(view, url, favicon)
-                        latestViewModel.setPageLoading(true)
-                        latestUrlChanged(url)
-                        latestCanGoBack(view?.canGoBack() == true)
-                    }
-
-                    override fun onPageFinished(view: WebView?, url: String?) {
-                        super.onPageFinished(view, url)
-                        WebViewCookieHelper.flush()
-                        latestViewModel.setPageLoading(false)
-                        latestUrlChanged(url)
-                        latestCanGoBack(view?.canGoBack() == true)
-                    }
-                }
-
-                webChromeClient = object : WebChromeClient() {
-                    override fun onReceivedTitle(view: WebView?, title: String?) {
-                        super.onReceivedTitle(view, title)
-                        latestViewModel.setCurrentPageTitle(title)
-                    }
-                }
-                onWebViewReady(this)
             }
         },
-        update = { webView ->
-            onWebViewReady(webView)
-            if (webView.settings.userAgentString != userAgent) {
-                webView.settings.userAgentString = userAgent
-            }
-            val target = loadUrl
-            if (target != null && webView.url != target) {
-                webView.loadUrl(target)
-            } else if (reloadToken != appliedReloadToken) {
-                appliedReloadToken = reloadToken
-                if (!webView.url.isNullOrBlank()) {
-                    webView.reload()
-                } else if (target != null) {
-                    webView.loadUrl(target)
-                }
-            }
-            onCanGoBackChanged(webView.canGoBack())
-        }
+        update = { container ->
+            holder.syncInto(container, tabIds, activeTabId, autoplayFor)
+        },
+        // Detach only. Destroying a tab is the ViewModel's job.
+        onRelease = { container -> holder.detachFrom(container) }
     )
 }
 
@@ -731,6 +817,8 @@ private fun DetectedListSection(
     onClearPrevious: () -> Unit,
     canClearPrevious: Boolean,
     onDownloadItem: (DetectedVideoUrl) -> Unit,
+    onCastItem: (DetectedVideoUrl) -> Unit,
+    onCopyItem: (DetectedVideoUrl) -> Unit,
     modifier: Modifier = Modifier
 ) {
     Column(
@@ -809,7 +897,9 @@ private fun DetectedListSection(
                         items(videos, key = { it.url }) { item ->
                             DetectedVideoRow(
                                 item = item,
-                                onClick = { onDownloadItem(item) }
+                                onClick = { onDownloadItem(item) },
+                                onCast = { onCastItem(item) },
+                                onCopy = { onCopyItem(item) }
                             )
                         }
                     }
@@ -822,7 +912,9 @@ private fun DetectedListSection(
 @Composable
 private fun DetectedVideoRow(
     item: DetectedVideoUrl,
-    onClick: () -> Unit
+    onClick: () -> Unit,
+    onCast: () -> Unit,
+    onCopy: () -> Unit
 ) {
     Row(
         modifier = Modifier
@@ -848,6 +940,20 @@ private fun DetectedVideoRow(
                     overflow = TextOverflow.Ellipsis
                 )
             }
+        }
+        TextButton(
+            onClick = onCast,
+            modifier = Modifier.size(width = 40.dp, height = 36.dp),
+            contentPadding = ButtonDefaults.TextButtonContentPadding
+        ) {
+            Text("▶", fontSize = 15.sp)
+        }
+        TextButton(
+            onClick = onCopy,
+            modifier = Modifier.size(width = 40.dp, height = 36.dp),
+            contentPadding = ButtonDefaults.TextButtonContentPadding
+        ) {
+            Text("⧉", fontSize = 15.sp)
         }
         TypeBadge(type = item.type)
     }
@@ -912,29 +1018,15 @@ private fun TypeBadge(type: VideoType) {
     )
 }
 
-private fun normalizeUrl(raw: String): String {
+/** Blank input stays blank so the URL field shows its hint instead of "https://". */
+internal fun normalizeUrl(raw: String): String {
     val trimmed = raw.trim()
-    if (trimmed.isEmpty()) return "https://"
+    if (trimmed.isEmpty()) return ""
     return if (trimmed.startsWith("http://") || trimmed.startsWith("https://")) {
         trimmed
     } else {
         "https://$trimmed"
     }
-}
-
-@SuppressLint("SetJavaScriptEnabled")
-private fun clearWebViewData(webView: WebView?) {
-    webView?.apply {
-        stopLoading()
-        clearCache(true)
-        clearFormData()
-        clearHistory()
-    }
-    CookieManager.getInstance().apply {
-        removeAllCookies(null)
-        flush()
-    }
-    WebStorage.getInstance().deleteAllData()
 }
 
 private tailrec fun Context.findActivity(): Activity? = when (this) {
