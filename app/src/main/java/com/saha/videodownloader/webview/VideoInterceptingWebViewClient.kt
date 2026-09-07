@@ -6,18 +6,18 @@ import android.webkit.WebView
 import android.webkit.WebViewClient
 import com.saha.videodownloader.download.CapturedMediaHeaders
 import com.saha.videodownloader.model.VideoType
+import java.io.ByteArrayInputStream
 
 /**
- * Intercepts WebView network traffic to detect video URLs.
+ * Intercepts WebView network traffic to detect video URLs and optionally
+ * block ad/tracker requests when [adBlockEnabled] returns true.
  *
  * Callbacks may fire off the UI thread — the injected [onVideoUrlDetected]
  * must be thread-safe.
- *
- * Always returns `null` from [shouldInterceptRequest] so the WebView continues
- * loading the real resource (we only observe, never block).
  */
 open class VideoInterceptingWebViewClient(
-    private val onVideoUrlDetected: (url: String, type: VideoType) -> Unit
+    private val onVideoUrlDetected: (url: String, type: VideoType) -> Unit,
+    private val adBlockEnabled: () -> Boolean = { false }
 ) : WebViewClient() {
 
     override fun shouldInterceptRequest(
@@ -28,8 +28,10 @@ open class VideoInterceptingWebViewClient(
         if (!url.isNullOrBlank()) {
             inspectUrl(url)
             CapturedMediaHeaders.capture(url, request?.requestHeaders)
+            if (adBlockEnabled() && AdBlockMatcher.shouldBlock(url)) {
+                return emptyBlockedResponse()
+            }
         }
-        // Return null so WebView loads the resource normally.
         return null
     }
 
@@ -37,6 +39,9 @@ open class VideoInterceptingWebViewClient(
     override fun shouldInterceptRequest(view: WebView?, url: String?): WebResourceResponse? {
         if (!url.isNullOrBlank()) {
             inspectUrl(url)
+            if (adBlockEnabled() && AdBlockMatcher.shouldBlock(url)) {
+                return emptyBlockedResponse()
+            }
         }
         return null
     }
@@ -53,4 +58,11 @@ open class VideoInterceptingWebViewClient(
         val type = VideoUrlMatcher.matchVideoUrl(url) ?: return
         onVideoUrlDetected(url, type)
     }
+
+    private fun emptyBlockedResponse(): WebResourceResponse =
+        WebResourceResponse(
+            "text/plain",
+            "utf-8",
+            ByteArrayInputStream(ByteArray(0))
+        )
 }
