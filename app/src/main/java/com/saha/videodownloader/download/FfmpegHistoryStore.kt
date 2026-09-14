@@ -24,7 +24,8 @@ class FfmpegHistoryStore(context: Context) {
         val sourceUrl: String,
         val contentUri: String,
         val pageUrl: String? = null,
-        val createdAtMs: Long
+        val createdAtMs: Long,
+        val completedAtMs: Long = createdAtMs
     )
 
     fun add(entry: Entry) {
@@ -49,6 +50,11 @@ class FfmpegHistoryStore(context: Context) {
         notifyChanged()
     }
 
+    fun clear() {
+        save(emptyList())
+        notifyChanged()
+    }
+
     fun findByMediaUrl(mediaUrl: String): Entry? =
         getAll().firstOrNull { it.sourceUrl == mediaUrl }
 
@@ -70,7 +76,11 @@ class FfmpegHistoryStore(context: Context) {
                             } else {
                                 obj.optString("pageUrl").takeIf { it.isNotBlank() }
                             },
-                            createdAtMs = obj.getLong("createdAtMs")
+                            createdAtMs = obj.getLong("createdAtMs"),
+                            completedAtMs = obj.optLong(
+                                "completedAtMs",
+                                obj.getLong("createdAtMs")
+                            )
                         )
                     )
                 }
@@ -91,6 +101,7 @@ class FfmpegHistoryStore(context: Context) {
                     .put("contentUri", entry.contentUri)
                     .put("pageUrl", entry.pageUrl)
                     .put("createdAtMs", entry.createdAtMs)
+                    .put("completedAtMs", entry.completedAtMs)
             )
         }
         prefs.edit { putString(KEY_ENTRIES, array.toString()) }

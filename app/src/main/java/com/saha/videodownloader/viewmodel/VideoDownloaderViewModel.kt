@@ -206,6 +206,24 @@ class VideoDownloaderViewModel(application: Application) : AndroidViewModel(appl
         return true
     }
 
+    fun openDetectedUrl(url: String, background: Boolean): Boolean {
+        rememberUrl(url)
+        val active = activeTab()
+        if (!background && active.isBlankNewTab) {
+            navigateTab(active.id, url)
+            return true
+        }
+        if (_tabs.value.size >= BrowserTab.MAX_TABS) {
+            return false
+        }
+        val tab = createTab(urlInput = url, loadUrl = url)
+        _tabs.update { it + tab }
+        if (!background) {
+            _activeTabId.value = tab.id
+        }
+        return true
+    }
+
     fun setTabCanGoBack(tabId: Long, canGoBack: Boolean) {
         updateTab(tabId) { it.copy(canGoBack = canGoBack) }
     }

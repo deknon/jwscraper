@@ -14,6 +14,8 @@ data class LibraryDownload(
     val contentUri: String? = null,
     /** Webpage URL where the media was discovered (for copy / reopen). */
     val pageUrl: String? = null,
+    val startedAtMs: Long? = null,
+    val completedAtMs: Long? = null,
     val updatedAtMs: Long = System.currentTimeMillis(),
     /** Optional live status text (e.g. ffmpeg mux speed). */
     val statusMessage: String? = null

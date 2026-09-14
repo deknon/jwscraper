@@ -53,6 +53,11 @@ class DownloadsViewModel(application: Application) : AndroidViewModel(applicatio
         }
     }
 
+    fun clearHistory() {
+        repository.clearHistory()
+        stopPlayback()
+    }
+
     fun cancelFfmpeg(item: LibraryDownload) {
         repository.cancelFfmpegJob(item.id)
     }
