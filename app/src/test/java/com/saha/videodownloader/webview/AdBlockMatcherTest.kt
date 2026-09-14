@@ -60,4 +60,15 @@ class AdBlockMatcherTest {
         assertFalse(AdBlockMatcher.shouldBlock("https://cdn.example.com/style.css"))
         assertFalse(AdBlockMatcher.shouldBlock(""))
     }
+
+    @Test
+    fun doesNotBlockAdLikeTextInUnrelatedHostsOrQueries() {
+        assertFalse(AdBlockMatcher.shouldBlock("https://notdoubleclick.net/app.js"))
+        assertFalse(
+            AdBlockMatcher.shouldBlock(
+                "https://example.com/redirect?target=https%3A%2F%2Fdoubleclick.net"
+            )
+        )
+        assertFalse(AdBlockMatcher.shouldBlock("https://example.com/catalog/adventure/banner.js"))
+    }
 }

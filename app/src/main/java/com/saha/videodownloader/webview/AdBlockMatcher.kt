@@ -6,7 +6,7 @@ package com.saha.videodownloader.webview
  */
 object AdBlockMatcher {
 
-    private val hostHints = listOf(
+    private val hostHints = setOf(
         "doubleclick.net",
         "googlesyndication.com",
         "googleadservices.com",
@@ -33,7 +33,6 @@ object AdBlockMatcher {
         "rubiconproject.com",
         "openx.net",
         "casalemedia.com",
-        "facebook.com/tr",
         "connect.facebook.net",
         "hotjar.com",
         "clarity.ms"
@@ -49,6 +48,7 @@ object AdBlockMatcher {
         "/pagead/",
         "/pagead2/",
         "/sponsored/",
+        "/tr",
         "adsystem",
         "adserver",
         "adservice",
@@ -67,9 +67,11 @@ object AdBlockMatcher {
         if (url.isBlank()) return false
         if (VideoUrlMatcher.matchVideoUrl(url) != null) return false
 
-        val lower = url.lowercase()
-        if (hostHints.any { lower.contains(it) }) return true
-        if (pathHints.any { lower.contains(it) }) return true
-        return false
+        val uri = runCatching { java.net.URI(url) }.getOrNull() ?: return false
+        val host = uri.host?.lowercase() ?: return false
+        if (hostHints.any { host == it || host.endsWith(".$it") }) return true
+
+        val path = uri.rawPath.orEmpty().lowercase()
+        return pathHints.any { path.contains(it) }
     }
 }
