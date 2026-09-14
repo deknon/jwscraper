@@ -151,6 +151,7 @@ object FfmpegJobTracker {
             it.copy(
                 state = LibraryDownload.State.FAILED,
                 message = message,
+                completedAtMs = System.currentTimeMillis(),
                 updatedAtMs = System.currentTimeMillis()
             )
         }
@@ -173,6 +174,7 @@ object FfmpegJobTracker {
                     state = LibraryDownload.State.FAILED,
                     message = "งานหยุดกลางคัน (แอปถูกปิด/ระบบหยุด) — กดดาวน์โหลดใหม่",
                     sessionId = null,
+                    completedAtMs = System.currentTimeMillis(),
                     updatedAtMs = System.currentTimeMillis()
                 )
                 changed = true

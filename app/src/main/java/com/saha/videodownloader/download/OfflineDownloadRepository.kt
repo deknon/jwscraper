@@ -43,7 +43,10 @@ class OfflineDownloadRepository(context: Context) {
                     contentUri = null,
                     pageUrl = job.refererUrl,
                     startedAtMs = job.startedAtMs,
-                    completedAtMs = job.completedAtMs,
+                    completedAtMs = job.completedAtMs
+                        ?: job.updatedAtMs.takeIf {
+                            job.state == LibraryDownload.State.FAILED
+                        },
                     updatedAtMs = job.updatedAtMs,
                     statusMessage = job.message
                 )
@@ -158,8 +161,8 @@ class OfflineDownloadRepository(context: Context) {
             manager.downloadIndex.getDownloads().use { cursor ->
                 while (cursor.moveToNext()) {
                     val download = cursor.download
-                    if (download.state != Download.STATE_DOWNLOADING &&
-                        download.state != Download.STATE_QUEUED
+                    if (download.state == Download.STATE_COMPLETED ||
+                        download.state == Download.STATE_FAILED
                     ) {
                         add(download.request.id)
                     }

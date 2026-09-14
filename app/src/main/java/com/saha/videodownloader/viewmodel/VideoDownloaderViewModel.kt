@@ -191,7 +191,7 @@ class VideoDownloaderViewModel(application: Application) : AndroidViewModel(appl
     fun openExternalUrl(url: String): Boolean {
         rememberUrl(url)
         val active = activeTab()
-        if (!background && active.isBlankNewTab) {
+        if (active.isBlankNewTab) {
             navigateTab(active.id, url)
             return true
         }
@@ -209,7 +209,7 @@ class VideoDownloaderViewModel(application: Application) : AndroidViewModel(appl
     fun openDetectedUrl(url: String, background: Boolean): Boolean {
         rememberUrl(url)
         val active = activeTab()
-        if (active.isBlankNewTab) {
+        if (!background && active.isBlankNewTab) {
             navigateTab(active.id, url)
             return true
         }

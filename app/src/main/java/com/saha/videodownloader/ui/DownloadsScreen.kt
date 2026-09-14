@@ -78,6 +78,11 @@ fun DownloadsScreen(
     val maxConcurrent by viewModel.maxConcurrent.collectAsStateWithLifecycle()
     val context = LocalContext.current
     val playingItem = downloads.firstOrNull { it.id == playingId }
+    val player = rememberOfflinePlayer(
+        item = playingItem,
+        repository = viewModel.repository(),
+        context = context
+    )
     var showClearConfirm by remember { mutableStateOf(false) }
     var fullscreen by remember { mutableStateOf(false) }
 
@@ -129,10 +134,10 @@ fun DownloadsScreen(
             )
             HorizontalDivider()
 
-            if (playingItem != null && !fullscreen) {
+            if (playingItem != null && !fullscreen && player != null) {
                 OfflinePlayer(
                     item = playingItem,
-                    repository = viewModel.repository(),
+                    player = player,
                     onClose = { viewModel.stopPlayback() },
                     fullscreen = false,
                     onToggleFullscreen = { fullscreen = true },
@@ -219,7 +224,7 @@ fun DownloadsScreen(
         }
     }
 
-    if (fullscreen && playingItem != null) {
+    if (fullscreen && playingItem != null && player != null) {
         Dialog(
             onDismissRequest = { fullscreen = false },
             properties = DialogProperties(
@@ -229,7 +234,7 @@ fun DownloadsScreen(
         ) {
             OfflinePlayer(
                 item = playingItem,
-                repository = viewModel.repository(),
+                player = player,
                 onClose = {
                     fullscreen = false
                     viewModel.stopPlayback()
@@ -474,35 +479,13 @@ private fun formatDownloadTimes(item: LibraryDownload): String {
 @Composable
 private fun OfflinePlayer(
     item: LibraryDownload,
-    repository: OfflineDownloadRepository,
+    player: ExoPlayer,
     onClose: () -> Unit,
     fullscreen: Boolean,
     onToggleFullscreen: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
-    val download = remember(item.id) { repository.getMedia3Download(item.id) }
-
-    val player = remember(item.id) {
-        val cacheFactory = repository.buildCacheDataSourceFactory()
-        val mediaSourceFactory = DefaultMediaSourceFactory(context)
-            .setDataSourceFactory(cacheFactory)
-        ExoPlayer.Builder(context)
-            .setMediaSourceFactory(mediaSourceFactory)
-            .build()
-            .also { exo ->
-                val mediaItem = download?.request?.toMediaItem()
-                    ?: MediaItem.fromUri(item.sourceUrl)
-                exo.setMediaItem(mediaItem)
-                exo.prepare()
-                exo.playWhenReady = true
-            }
-    }
-
-    DisposableEffect(player) {
-        onDispose { player.release() }
-    }
-
     DisposableEffect(fullscreen) {
         val activity = context.findActivity()
         val previousOrientation = activity?.requestedOrientation
@@ -561,6 +544,36 @@ private fun OfflinePlayer(
             update = { it.player = player }
         )
     }
+}
+
+@Composable
+private fun rememberOfflinePlayer(
+    item: LibraryDownload?,
+    repository: OfflineDownloadRepository,
+    context: Context
+): ExoPlayer? {
+    val player = remember(item?.id) {
+        item?.let {
+            val download = repository.getMedia3Download(it.id)
+            val cacheFactory = repository.buildCacheDataSourceFactory()
+            val mediaSourceFactory = DefaultMediaSourceFactory(context)
+                .setDataSourceFactory(cacheFactory)
+            ExoPlayer.Builder(context)
+                .setMediaSourceFactory(mediaSourceFactory)
+                .build()
+                .also { exo ->
+                    val mediaItem = download?.request?.toMediaItem()
+                        ?: MediaItem.fromUri(it.sourceUrl)
+                    exo.setMediaItem(mediaItem)
+                    exo.prepare()
+                    exo.playWhenReady = true
+                }
+        }
+    }
+    DisposableEffect(player) {
+        onDispose { player?.release() }
+    }
+    return player
 }
 
 private tailrec fun Context.findActivity(): Activity? = when (this) {
