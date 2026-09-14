@@ -17,7 +17,8 @@ import java.io.ByteArrayInputStream
  */
 open class VideoInterceptingWebViewClient(
     private val onVideoUrlDetected: (url: String, type: VideoType) -> Unit,
-    private val adBlockEnabled: () -> Boolean = { false }
+    private val adBlockEnabled: () -> Boolean = { false },
+    private val tabId: Long? = null
 ) : WebViewClient() {
 
     override fun shouldInterceptRequest(
@@ -27,7 +28,7 @@ open class VideoInterceptingWebViewClient(
         val url = request?.url?.toString()
         if (!url.isNullOrBlank()) {
             inspectUrl(url)
-            CapturedMediaHeaders.capture(url, request?.requestHeaders)
+            CapturedMediaHeaders.capture(url, request?.requestHeaders, tabId)
             if (adBlockEnabled() && AdBlockMatcher.shouldBlock(url)) {
                 return emptyBlockedResponse()
             }
@@ -39,6 +40,7 @@ open class VideoInterceptingWebViewClient(
     override fun shouldInterceptRequest(view: WebView?, url: String?): WebResourceResponse? {
         if (!url.isNullOrBlank()) {
             inspectUrl(url)
+            CapturedMediaHeaders.capture(url, null, tabId)
             if (adBlockEnabled() && AdBlockMatcher.shouldBlock(url)) {
                 return emptyBlockedResponse()
             }

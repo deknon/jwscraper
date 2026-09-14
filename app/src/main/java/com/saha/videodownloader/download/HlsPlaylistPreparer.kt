@@ -26,10 +26,11 @@ object HlsPlaylistPreparer {
         mediaUrl: String,
         pageUrl: String?,
         userAgent: String,
+        tabId: Long? = null,
         workDir: File
     ): Result {
         workDir.mkdirs()
-        val headers = CapturedMediaHeaders.mergeFor(mediaUrl, pageUrl, userAgent)
+        val headers = CapturedMediaHeaders.mergeFor(mediaUrl, pageUrl, userAgent, tabId)
 
         val first = fetchText(mediaUrl, headers)
             ?: throw IllegalStateException(

@@ -16,6 +16,7 @@ class FfmpegHlsDownloadStrategy(
     private val userAgent: String? = null,
     private val refererUrl: String? = null,
     private val pageTitle: String? = null,
+    private val tabId: Long? = null,
     private val forcedFilename: String? = null
 ) : HlsDownloadStrategy {
 
@@ -30,6 +31,7 @@ class FfmpegHlsDownloadStrategy(
             userAgent = userAgent,
             refererUrl = refererUrl,
             pageTitle = pageTitle,
+            tabId = tabId,
             forcedFilename = forcedFilename
         )
         mainHandler.post {

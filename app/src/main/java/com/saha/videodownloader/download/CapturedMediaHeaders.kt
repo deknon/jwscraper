@@ -9,13 +9,17 @@ import java.util.concurrent.ConcurrentHashMap
  */
 object CapturedMediaHeaders {
 
-    private val byHost = ConcurrentHashMap<String, Map<String, String>>()
+    private val byScopeAndHost = ConcurrentHashMap<String, Map<String, String>>()
 
     @Volatile
     var lastMediaUrl: String? = null
         private set
 
-    fun capture(url: String, requestHeaders: Map<String, String>?) {
+    fun capture(
+        url: String,
+        requestHeaders: Map<String, String>?,
+        tabId: Long? = null
+    ) {
         if (requestHeaders.isNullOrEmpty()) return
         if (VideoUrlMatcher.matchVideoUrl(url) == null &&
             !url.contains(".m3u8", ignoreCase = true) &&
@@ -38,14 +42,15 @@ object CapturedMediaHeaders {
             }
             .mapKeys { it.key }
         if (useful.isEmpty()) return
-        byHost[host] = useful
+        byScopeAndHost[key(tabId, host)] = useful
         lastMediaUrl = url
     }
 
     fun mergeFor(
         mediaUrl: String,
         pageUrl: String?,
-        userAgent: String
+        userAgent: String,
+        tabId: Long? = null
     ): Map<String, String> {
         val base = LinkedHashMap<String, String>()
         base["User-Agent"] = userAgent
@@ -61,26 +66,22 @@ object CapturedMediaHeaders {
 
         // Overlay headers the player actually used for this host / related hosts.
         hostOf(mediaUrl)?.let { host ->
-            byHost[host]?.forEach { (k, v) -> base[canonical(k)] = v }
+            byScopeAndHost[key(tabId, host)]?.forEach { (k, v) -> base[canonical(k)] = v }
         }
         hostOf(pageUrl)?.let { host ->
-            byHost[host]?.forEach { (k, v) ->
+            byScopeAndHost[key(tabId, host)]?.forEach { (k, v) ->
                 // Don't overwrite a fresher media Cookie with page cookies unless missing.
                 val key = canonical(k)
                 if (key == "Cookie" && base.containsKey("Cookie")) return@forEach
                 base.putIfAbsent(key, v)
             }
         }
-        // Latest capture wins for Authorization-like headers.
-        byHost.values.forEach { map ->
-            map.forEach { (k, v) ->
-                val key = canonical(k)
-                if (key == "Authorization" || key.startsWith("X-")) {
-                    base[key] = v
-                }
-            }
-        }
         return base
+    }
+
+    fun clearTab(tabId: Long) {
+        val prefix = "$tabId|"
+        byScopeAndHost.keys.removeIf { it.startsWith(prefix) }
     }
 
     fun toFfmpegHeaderBlock(headers: Map<String, String>): String =
@@ -106,4 +107,9 @@ object CapturedMediaHeaders {
             null
         }
     }
+
+    private fun key(tabId: Long?, host: String): String =
+        "${tabId ?: LEGACY_SCOPE}|$host"
+
+    private const val LEGACY_SCOPE = "legacy"
 }

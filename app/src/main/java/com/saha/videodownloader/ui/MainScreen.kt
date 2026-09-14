@@ -5,6 +5,7 @@ import android.app.Activity
 import android.content.Context
 import android.content.ContextWrapper
 import android.graphics.Bitmap
+import android.os.Bundle
 import android.view.ViewGroup
 import android.view.WindowManager
 import android.webkit.CookieManager
@@ -152,7 +153,12 @@ fun MainScreen(
 
     DisposableEffect(Unit) {
         onDispose {
-            webViews.values.forEach { destroyWebView(it) }
+            webViews.forEach { (tabId, webView) ->
+                val state = Bundle()
+                webView.saveState(state)
+                viewModel.saveTabWebViewState(tabId, state)
+                destroyWebView(webView)
+            }
             webViews.clear()
         }
     }
@@ -348,6 +354,7 @@ fun MainScreen(
                                             pageTitle = pageTitle,
                                             pageUrl = pageUrl,
                                             userAgent = userAgent,
+                                            tabId = item.tabId,
                                             defaultExt = ".mp4"
                                         )
                                     }
@@ -356,7 +363,8 @@ fun MainScreen(
                                         url = item.url,
                                         suggestedName = filename,
                                         pageUrl = pageUrl,
-                                        userAgent = userAgent
+                                        userAgent = userAgent,
+                                        tabId = item.tabId
                                     )
                                     viewModel.setDownloading(false)
                                     snackbarHostState.showSnackbar(
@@ -381,7 +389,8 @@ fun MainScreen(
                                 },
                                 userAgent = userAgent,
                                 refererUrl = pageUrl,
-                                pageTitle = pageTitle
+                                pageTitle = pageTitle,
+                                tabId = item.tabId
                             )
                             VideoType.UNKNOWN -> {
                                 scope.launch {
@@ -392,6 +401,7 @@ fun MainScreen(
                                             pageTitle = pageTitle,
                                             pageUrl = pageUrl,
                                             userAgent = userAgent,
+                                            tabId = item.tabId,
                                             defaultExt = ".mp4"
                                         )
                                     }
@@ -400,7 +410,8 @@ fun MainScreen(
                                         url = item.url,
                                         suggestedName = filename,
                                         pageUrl = pageUrl,
-                                        userAgent = userAgent
+                                        userAgent = userAgent,
+                                        tabId = item.tabId
                                     )
                                     viewModel.setDownloading(false)
                                     snackbarHostState.showSnackbar(
@@ -838,11 +849,12 @@ private fun MultiTabWebViews(
                     webView.settings.userAgentString = userAgent
                 }
 
-                val target = tab.loadUrl
-                if (target != null && webView.url != target) {
-                    webView.loadUrl(target)
+                val restored = latestViewModel.restoreTabWebViewState(tab.id)
+                if (restored != null) {
+                    webView.restoreState(restored)
                     latestViewModel.consumeTabLoadUrl(tab.id)
-                } else if (target != null) {
+                } else if (tab.loadUrl != null) {
+                    webView.loadUrl(tab.loadUrl)
                     latestViewModel.consumeTabLoadUrl(tab.id)
                 }
             }
@@ -860,13 +872,9 @@ private fun MultiTabWebViews(
 
             if (reloadToken != appliedReloadToken) {
                 appliedReloadToken = reloadToken
-                webViews[activeTabId]?.let { webView ->
+                webViews.values.forEach { webView ->
                     if (!webView.url.isNullOrBlank() && webView.url != "about:blank") {
                         webView.reload()
-                    } else {
-                        tabs.firstOrNull { it.id == activeTabId }?.loadUrl?.let {
-                            webView.loadUrl(it)
-                        }
                     }
                 }
             }
@@ -906,7 +914,8 @@ private fun createTabWebView(
             onVideoUrlDetected = { url, type ->
                 viewModelProvider().onVideoUrlDetected(tabId, url, type)
             },
-            adBlockEnabled = adBlockEnabled
+            adBlockEnabled = adBlockEnabled,
+            tabId = tabId
         ) {
             override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
                 super.onPageStarted(view, url, favicon)

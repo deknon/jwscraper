@@ -31,6 +31,7 @@ object FfmpegJobTracker {
         val refererUrl: String? = null,
         val userAgent: String? = null,
         val pageTitle: String? = null,
+        val tabId: Long? = null,
         val updatedAtMs: Long = System.currentTimeMillis()
     )
 
@@ -57,7 +58,8 @@ object FfmpegJobTracker {
         sourceUrl: String,
         refererUrl: String? = null,
         userAgent: String? = null,
-        pageTitle: String? = null
+        pageTitle: String? = null,
+        tabId: Long? = null
     ) {
         jobs[id] = Job(
             id = id,
@@ -68,7 +70,8 @@ object FfmpegJobTracker {
             message = "รอคิว…",
             refererUrl = refererUrl,
             userAgent = userAgent,
-            pageTitle = pageTitle
+            pageTitle = pageTitle,
+            tabId = tabId
         )
         publish()
     }
@@ -79,7 +82,8 @@ object FfmpegJobTracker {
         sourceUrl: String,
         refererUrl: String? = null,
         userAgent: String? = null,
-        pageTitle: String? = null
+        pageTitle: String? = null,
+        tabId: Long? = null
     ) {
         jobs[id] = Job(
             id = id,
@@ -90,7 +94,8 @@ object FfmpegJobTracker {
             message = "เริ่ม mux…",
             refererUrl = refererUrl,
             userAgent = userAgent,
-            pageTitle = pageTitle
+            pageTitle = pageTitle,
+            tabId = tabId
         )
         publish()
     }
@@ -200,6 +205,7 @@ object FfmpegJobTracker {
                     .put("refererUrl", job.refererUrl)
                     .put("userAgent", job.userAgent)
                     .put("pageTitle", job.pageTitle)
+                    .put("tabId", job.tabId)
                     .put("updatedAtMs", job.updatedAtMs)
             )
         }
@@ -243,6 +249,8 @@ object FfmpegJobTracker {
                     } else {
                         obj.optString("pageTitle").takeIf { it.isNotBlank() }
                     },
+                    tabId = obj.optLong("tabId", Long.MIN_VALUE)
+                        .takeUnless { it == Long.MIN_VALUE },
                     updatedAtMs = obj.optLong("updatedAtMs", System.currentTimeMillis())
                 )
             }

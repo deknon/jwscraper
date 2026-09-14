@@ -22,6 +22,7 @@ object DownloadHelper {
         pageTitle: String? = null,
         pageUrl: String? = null,
         userAgent: String? = null,
+        tabId: Long? = null,
         skipDuplicateCheck: Boolean = false
     ) {
         val ua = userAgent ?: MOBILE_CHROME_UA
@@ -31,6 +32,7 @@ object DownloadHelper {
                 pageTitle = pageTitle,
                 pageUrl = pageUrl,
                 userAgent = ua,
+                tabId = tabId,
                 defaultExt = ".mp4",
                 probeNetwork = true
             )
@@ -109,6 +111,7 @@ object DownloadHelper {
         userAgent: String? = null,
         refererUrl: String? = null,
         pageTitle: String? = null,
+        tabId: Long? = null,
         skipDuplicateCheck: Boolean = false
     ) {
         fun showModePicker(forcedFilename: String?) {
@@ -129,6 +132,7 @@ object DownloadHelper {
                                     userAgent = userAgent,
                                     refererUrl = refererUrl,
                                     pageTitle = pageTitle,
+                                    tabId = tabId,
                                     forcedFilename = forcedFilename
                                 ).download(url, context)
                                 BatteryOptimizationPrompt.maybePromptLater(context)

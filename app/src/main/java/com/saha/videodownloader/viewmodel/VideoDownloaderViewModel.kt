@@ -1,8 +1,10 @@
 package com.saha.videodownloader.viewmodel
 
 import android.app.Application
+import android.os.Bundle
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.saha.videodownloader.download.CapturedMediaHeaders
 import com.saha.videodownloader.download.DownloadHelper
 import com.saha.videodownloader.download.DownloadSettingsStore
 import com.saha.videodownloader.download.UrlHistoryStore
@@ -79,6 +81,7 @@ class VideoDownloaderViewModel(application: Application) : AndroidViewModel(appl
     private val seenUrlsByTab = ConcurrentHashMap<Long, MutableSet<String>>()
     private val probeJobs = ConcurrentHashMap<String, Job>()
     private val probeLimiter = Semaphore(permits = 3)
+    private val webViewStates = mutableMapOf<Long, Bundle>()
 
     private val _tabs = MutableStateFlow(listOf(createTab()))
     val tabs: StateFlow<List<BrowserTab>> = _tabs.asStateFlow()
@@ -135,6 +138,9 @@ class VideoDownloaderViewModel(application: Application) : AndroidViewModel(appl
         if (current.size <= 1) return false
         val closing = current.firstOrNull { it.id == tabId } ?: return false
         clearTabDetections(closing.id)
+        seenUrlsByTab.remove(closing.id)
+        webViewStates.remove(closing.id)
+        CapturedMediaHeaders.clearTab(closing.id)
         val remaining = current.filter { it.id != tabId }
         _tabs.value = remaining
         if (_activeTabId.value == tabId) {
@@ -169,6 +175,13 @@ class VideoDownloaderViewModel(application: Application) : AndroidViewModel(appl
             if (tab.loadUrl == null) tab else tab.copy(loadUrl = null)
         }
     }
+
+    fun saveTabWebViewState(tabId: Long, state: Bundle) {
+        webViewStates[tabId] = state
+    }
+
+    fun restoreTabWebViewState(tabId: Long): Bundle? =
+        webViewStates.remove(tabId)
 
     /**
      * External / share URL: prefer a new tab; reuse the active blank "แท็บใหม่"
@@ -237,6 +250,7 @@ class VideoDownloaderViewModel(application: Application) : AndroidViewModel(appl
                     type = type,
                     detectedAt = System.currentTimeMillis(),
                     pageUrl = pageUrl,
+                    tabId = tabId,
                     metaState = VideoMetaState.PENDING
                 )
             )
@@ -387,7 +401,8 @@ class VideoDownloaderViewModel(application: Application) : AndroidViewModel(appl
                             url = url,
                             type = type,
                             pageUrl = pageUrl,
-                            userAgent = currentUserAgent()
+                            userAgent = currentUserAgent(),
+                            tabId = tabId
                         )
                     }
                 }

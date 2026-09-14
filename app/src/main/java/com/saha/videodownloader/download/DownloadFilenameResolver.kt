@@ -39,13 +39,14 @@ object DownloadFilenameResolver {
         pageTitle: String?,
         pageUrl: String?,
         userAgent: String,
+        tabId: Long? = null,
         defaultExt: String = ".mp4",
         probeNetwork: Boolean = true
     ): String {
         val ext = normalizeExt(defaultExt)
         if (probeNetwork) {
             runCatching {
-                probeContentDisposition(mediaUrl, pageUrl, userAgent)
+                probeContentDisposition(mediaUrl, pageUrl, userAgent, tabId)
             }.getOrNull()?.let { raw ->
                 sanitizeFilename(raw, ext)?.let { return it }
             }
@@ -127,9 +128,10 @@ object DownloadFilenameResolver {
     private fun probeContentDisposition(
         mediaUrl: String,
         pageUrl: String?,
-        userAgent: String
+        userAgent: String,
+        tabId: Long?
     ): String? {
-        val headers = CapturedMediaHeaders.mergeFor(mediaUrl, pageUrl, userAgent)
+        val headers = CapturedMediaHeaders.mergeFor(mediaUrl, pageUrl, userAgent, tabId)
         headDisposition(mediaUrl, headers)?.let { return it }
         return rangeDisposition(mediaUrl, headers)
     }
