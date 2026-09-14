@@ -62,6 +62,12 @@ android {
         compose = true
     }
 
+    lint {
+        // androidx.lifecycle's NullSafeMutableLiveData detector crashes on this
+        // AGP/Kotlin combo and fails assembleRelease (known lint-tool bug).
+        disable += "NullSafeMutableLiveData"
+    }
+
     packaging {
         resources {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
