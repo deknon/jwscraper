@@ -42,6 +42,8 @@ class OfflineDownloadRepository(context: Context) {
                     progressPercent = job.progressPercent,
                     contentUri = null,
                     pageUrl = job.refererUrl,
+                    startedAtMs = job.startedAtMs,
+                    completedAtMs = job.completedAtMs,
                     updatedAtMs = job.updatedAtMs,
                     statusMessage = job.message
                 )
@@ -53,7 +55,9 @@ class OfflineDownloadRepository(context: Context) {
         sourceUrl: String,
         title: String,
         contentUri: String,
-        pageUrl: String? = null
+        pageUrl: String? = null,
+        startedAtMs: Long = System.currentTimeMillis(),
+        completedAtMs: Long = System.currentTimeMillis()
     ) {
         historyStore.add(
             FfmpegHistoryStore.Entry(
@@ -62,7 +66,8 @@ class OfflineDownloadRepository(context: Context) {
                 sourceUrl = sourceUrl,
                 contentUri = contentUri,
                 pageUrl = pageUrl,
-                createdAtMs = System.currentTimeMillis()
+                createdAtMs = startedAtMs,
+                completedAtMs = completedAtMs
             )
         )
     }
@@ -70,7 +75,9 @@ class OfflineDownloadRepository(context: Context) {
     fun recordProgressiveMp4(
         sourceUrl: String,
         title: String,
-        pageUrl: String? = null
+        pageUrl: String? = null,
+        startedAtMs: Long = System.currentTimeMillis(),
+        completedAtMs: Long = System.currentTimeMillis()
     ) {
         historyStore.add(
             FfmpegHistoryStore.Entry(
@@ -79,7 +86,8 @@ class OfflineDownloadRepository(context: Context) {
                 sourceUrl = sourceUrl,
                 contentUri = "",
                 pageUrl = pageUrl,
-                createdAtMs = System.currentTimeMillis()
+                createdAtMs = startedAtMs,
+                completedAtMs = completedAtMs
             )
         )
     }
@@ -143,6 +151,27 @@ class OfflineDownloadRepository(context: Context) {
         )
     }
 
+    fun clearHistory() {
+        historyStore.clear()
+        val manager = Media3DownloadUtil.getDownloadManager(appContext)
+        val removableIds = buildList {
+            manager.downloadIndex.getDownloads().use { cursor ->
+                while (cursor.moveToNext()) {
+                    val download = cursor.download
+                    if (download.state != Download.STATE_DOWNLOADING &&
+                        download.state != Download.STATE_QUEUED
+                    ) {
+                        add(download.request.id)
+                    }
+                }
+            }
+        }
+        removableIds.forEach(::removeMedia3Download)
+        FfmpegJobTracker.snapshot.value
+            .filter { it.state == LibraryDownload.State.FAILED }
+            .forEach { FfmpegJobTracker.remove(it.id) }
+    }
+
     fun buildCacheDataSourceFactory(): CacheDataSource.Factory =
         CacheDataSource.Factory()
             .setCache(Media3DownloadUtil.getDownloadCache(appContext))
@@ -204,6 +233,8 @@ class OfflineDownloadRepository(context: Context) {
                         progressPercent = 1f,
                         contentUri = entry.contentUri.takeIf { it.isNotBlank() },
                         pageUrl = entry.pageUrl,
+                        startedAtMs = entry.createdAtMs,
+                        completedAtMs = entry.completedAtMs,
                         updatedAtMs = entry.createdAtMs,
                         statusMessage = null
                     )
@@ -220,6 +251,10 @@ class OfflineDownloadRepository(context: Context) {
             state = state.toLibraryState(),
             progressPercent = percentDownloaded.coerceIn(0f, 100f) / 100f,
             contentUri = null,
+            startedAtMs = startTimeMs.takeIf { it > 0L },
+            completedAtMs = updateTimeMs.takeIf {
+                state == Download.STATE_COMPLETED || state == Download.STATE_FAILED
+            },
             updatedAtMs = updateTimeMs,
             statusMessage = null
         )

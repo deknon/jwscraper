@@ -18,6 +18,8 @@ import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.background
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
@@ -99,7 +101,7 @@ import com.saha.videodownloader.viewmodel.BrowserTab
 import com.saha.videodownloader.viewmodel.VideoDownloaderViewModel
 import com.saha.videodownloader.webview.VideoInterceptingWebViewClient
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
 fun MainScreen(
     viewModel: VideoDownloaderViewModel,
@@ -336,6 +338,15 @@ fun MainScreen(
                         }
                     },
                     canClearPrevious = canClearPrevious,
+                    onOpenDetectedUrl = { item, background ->
+                        if (!viewModel.openDetectedUrl(item.url, background)) {
+                            Toast.makeText(
+                                context,
+                                "เปิดแท็บได้สูงสุด ${BrowserTab.MAX_TABS} แท็บ",
+                                Toast.LENGTH_SHORT
+                            ).show()
+                        }
+                    },
                     onDownloadItem = { item ->
                         listExpanded = false
                         val pageUrl = activeTab.currentPageUrl
@@ -951,6 +962,7 @@ private fun DetectedListSection(
     onExpandedChange: (Boolean) -> Unit,
     onClearPrevious: () -> Unit,
     canClearPrevious: Boolean,
+    onOpenDetectedUrl: (DetectedVideoUrl, Boolean) -> Unit,
     onDownloadItem: (DetectedVideoUrl) -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -1033,7 +1045,10 @@ private fun DetectedListSection(
                                 item = item,
                                 onClick = { onDownloadItem(item) },
                                 onCopy = { MediaUrlActions.copyUrl(context, item.url) },
-                                onShare = { MediaUrlActions.shareUrl(context, item.url) }
+                                onShare = { MediaUrlActions.shareUrl(context, item.url) },
+                                onOpenDetectedUrl = { background ->
+                                    onOpenDetectedUrl(item, background)
+                                }
                             )
                         }
                     }
@@ -1044,12 +1059,15 @@ private fun DetectedListSection(
 }
 
 @Composable
+@OptIn(ExperimentalFoundationApi::class)
 private fun DetectedVideoRow(
     item: DetectedVideoUrl,
     onClick: () -> Unit,
     onCopy: () -> Unit,
-    onShare: () -> Unit
+    onShare: () -> Unit,
+    onOpenDetectedUrl: (Boolean) -> Unit
 ) {
+    var menuExpanded by remember { mutableStateOf(false) }
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -1058,7 +1076,10 @@ private fun DetectedVideoRow(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .clickable(onClick = onClick)
+                .combinedClickable(
+                    onClick = onClick,
+                    onLongClick = { menuExpanded = true }
+                )
                 .padding(vertical = 2.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
@@ -1081,6 +1102,25 @@ private fun DetectedVideoRow(
                 }
             }
             TypeBadge(type = item.type)
+        }
+        DropdownMenu(
+            expanded = menuExpanded,
+            onDismissRequest = { menuExpanded = false }
+        ) {
+            DropdownMenuItem(
+                text = { Text("เปิดแท็บใหม่") },
+                onClick = {
+                    menuExpanded = false
+                    onOpenDetectedUrl(false)
+                }
+            )
+            DropdownMenuItem(
+                text = { Text("เปิดแท็บใหม่เบื้องหลัง") },
+                onClick = {
+                    menuExpanded = false
+                    onOpenDetectedUrl(true)
+                }
+            )
         }
         Row(
             modifier = Modifier.fillMaxWidth(),

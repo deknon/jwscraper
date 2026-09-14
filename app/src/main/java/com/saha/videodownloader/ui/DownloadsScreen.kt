@@ -1,9 +1,13 @@
 package com.saha.videodownloader.ui
 
+import android.app.Activity
 import android.content.ClipData
 import android.content.ClipboardManager
+import android.content.Context
+import android.content.ContextWrapper
 import android.content.Intent
 import android.net.Uri
+import android.content.pm.ActivityInfo
 import android.view.ViewGroup
 import android.widget.FrameLayout
 import android.widget.Toast
@@ -21,6 +25,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -37,7 +42,9 @@ import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -45,6 +52,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.media3.common.MediaItem
 import androidx.media3.common.util.UnstableApi
@@ -69,6 +78,8 @@ fun DownloadsScreen(
     val maxConcurrent by viewModel.maxConcurrent.collectAsStateWithLifecycle()
     val context = LocalContext.current
     val playingItem = downloads.firstOrNull { it.id == playingId }
+    var showClearConfirm by remember { mutableStateOf(false) }
+    var fullscreen by remember { mutableStateOf(false) }
 
     Scaffold(
         modifier = modifier.fillMaxSize(),
@@ -80,6 +91,14 @@ fun DownloadsScreen(
                 },
                 navigationIcon = {
                     TextButton(onClick = onBack) { Text("กลับ") }
+                },
+                actions = {
+                    TextButton(
+                        onClick = { showClearConfirm = true },
+                        enabled = downloads.isNotEmpty()
+                    ) {
+                        Text("ล้างประวัติ")
+                    }
                 },
                 windowInsets = TopAppBarDefaults.windowInsets,
                 colors = TopAppBarDefaults.topAppBarColors(
@@ -110,11 +129,13 @@ fun DownloadsScreen(
             )
             HorizontalDivider()
 
-            if (playingItem != null) {
+            if (playingItem != null && !fullscreen) {
                 OfflinePlayer(
                     item = playingItem,
                     repository = viewModel.repository(),
                     onClose = { viewModel.stopPlayback() },
+                    fullscreen = false,
+                    onToggleFullscreen = { fullscreen = true },
                     modifier = Modifier
                         .fillMaxWidth()
                         .height(220.dp)
@@ -196,6 +217,51 @@ fun DownloadsScreen(
                 }
             }
         }
+    }
+
+    if (fullscreen && playingItem != null) {
+        Dialog(
+            onDismissRequest = { fullscreen = false },
+            properties = DialogProperties(
+                usePlatformDefaultWidth = false,
+                decorFitsSystemWindows = false
+            )
+        ) {
+            OfflinePlayer(
+                item = playingItem,
+                repository = viewModel.repository(),
+                onClose = {
+                    fullscreen = false
+                    viewModel.stopPlayback()
+                },
+                fullscreen = true,
+                onToggleFullscreen = { fullscreen = false },
+                modifier = Modifier.fillMaxSize()
+            )
+        }
+    }
+
+    if (showClearConfirm) {
+        AlertDialog(
+            onDismissRequest = { showClearConfirm = false },
+            title = { Text("ล้างประวัติการดาวน์โหลด") },
+            text = { Text("ลบรายการที่เสร็จแล้วและรายการเก่าออกจากหน้านี้หรือไม่") },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        showClearConfirm = false
+                        viewModel.clearHistory()
+                    }
+                ) {
+                    Text("ล้าง")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showClearConfirm = false }) {
+                    Text("ยกเลิก")
+                }
+            }
+        )
     }
 }
 
@@ -312,6 +378,11 @@ private fun DownloadRow(
             text = stateLabel(item),
             style = MaterialTheme.typography.labelMedium
         )
+        Text(
+            text = formatDownloadTimes(item),
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
         if (item.state == LibraryDownload.State.DOWNLOADING ||
             item.state == LibraryDownload.State.QUEUED
         ) {
@@ -382,12 +453,31 @@ private fun stateLabel(item: LibraryDownload): String {
     }
 }
 
+private fun formatDownloadTimes(item: LibraryDownload): String {
+    val formatter = java.text.DateFormat.getDateTimeInstance(
+        java.text.DateFormat.SHORT,
+        java.text.DateFormat.SHORT
+    )
+    val started = item.startedAtMs?.takeIf { it > 0L }?.let { formatter.format(java.util.Date(it)) }
+    val completed =
+        item.completedAtMs?.takeIf { it > 0L }?.let { formatter.format(java.util.Date(it)) }
+    return buildString {
+        if (started != null) append("เริ่ม: ").append(started)
+        if (completed != null) {
+            if (isNotEmpty()) append(" · ")
+            append("สิ้นสุด: ").append(completed)
+        }
+    }.ifBlank { "เวลาเริ่ม/สิ้นสุดยังไม่พร้อม" }
+}
+
 @androidx.annotation.OptIn(UnstableApi::class)
 @Composable
 private fun OfflinePlayer(
     item: LibraryDownload,
     repository: OfflineDownloadRepository,
     onClose: () -> Unit,
+    fullscreen: Boolean,
+    onToggleFullscreen: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
@@ -413,8 +503,22 @@ private fun OfflinePlayer(
         onDispose { player.release() }
     }
 
+    DisposableEffect(fullscreen) {
+        val activity = context.findActivity()
+        val previousOrientation = activity?.requestedOrientation
+        if (fullscreen) {
+            activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR
+        }
+        onDispose {
+            if (fullscreen) {
+                activity?.requestedOrientation =
+                    previousOrientation ?: ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+            }
+        }
+    }
+
     Column(modifier = modifier) {
-        Row(
+        if (!fullscreen) Row(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(horizontal = 8.dp),
@@ -430,6 +534,14 @@ private fun OfflinePlayer(
             )
             IconButton(onClick = onClose) {
                 Text("ปิด")
+            }
+        }
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.End
+        ) {
+            TextButton(onClick = onToggleFullscreen) {
+                Text(if (fullscreen) "ย่อ" else "เต็มจอ")
             }
         }
         AndroidView(
@@ -449,4 +561,10 @@ private fun OfflinePlayer(
             update = { it.player = player }
         )
     }
+}
+
+private tailrec fun Context.findActivity(): Activity? = when (this) {
+    is Activity -> this
+    is ContextWrapper -> baseContext.findActivity()
+    else -> null
 }

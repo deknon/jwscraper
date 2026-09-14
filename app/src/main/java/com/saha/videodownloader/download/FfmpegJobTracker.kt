@@ -32,6 +32,8 @@ object FfmpegJobTracker {
         val userAgent: String? = null,
         val pageTitle: String? = null,
         val tabId: Long? = null,
+        val startedAtMs: Long? = null,
+        val completedAtMs: Long? = null,
         val updatedAtMs: Long = System.currentTimeMillis()
     )
 
@@ -110,6 +112,7 @@ object FfmpegJobTracker {
             it.copy(
                 state = LibraryDownload.State.DOWNLOADING,
                 message = "เริ่ม mux…",
+                startedAtMs = System.currentTimeMillis(),
                 updatedAtMs = System.currentTimeMillis()
             )
         }
@@ -206,6 +209,8 @@ object FfmpegJobTracker {
                     .put("userAgent", job.userAgent)
                     .put("pageTitle", job.pageTitle)
                     .put("tabId", job.tabId)
+                    .put("startedAtMs", job.startedAtMs)
+                    .put("completedAtMs", job.completedAtMs)
                     .put("updatedAtMs", job.updatedAtMs)
             )
         }
@@ -250,6 +255,10 @@ object FfmpegJobTracker {
                         obj.optString("pageTitle").takeIf { it.isNotBlank() }
                     },
                     tabId = obj.optLong("tabId", Long.MIN_VALUE)
+                        .takeUnless { it == Long.MIN_VALUE },
+                    startedAtMs = obj.optLong("startedAtMs", Long.MIN_VALUE)
+                        .takeUnless { it == Long.MIN_VALUE },
+                    completedAtMs = obj.optLong("completedAtMs", Long.MIN_VALUE)
                         .takeUnless { it == Long.MIN_VALUE },
                     updatedAtMs = obj.optLong("updatedAtMs", System.currentTimeMillis())
                 )

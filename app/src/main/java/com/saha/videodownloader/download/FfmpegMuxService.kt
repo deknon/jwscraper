@@ -284,12 +284,16 @@ class FfmpegMuxService : Service() {
                                     filename
                                 )
                                 if (published != null) {
-                                    val pageUrl = FfmpegJobTracker.get(jobId)?.refererUrl
+                                    val job = FfmpegJobTracker.get(jobId)
+                                    val pageUrl = job?.refererUrl
+                                    val completedAt = System.currentTimeMillis()
                                     OfflineDownloadRepository(this).recordFfmpegSuccess(
                                         sourceUrl = url,
                                         title = filename,
                                         contentUri = published.toString(),
-                                        pageUrl = pageUrl
+                                        pageUrl = pageUrl,
+                                        startedAtMs = job?.startedAtMs ?: completedAt,
+                                        completedAtMs = completedAt
                                     )
                                     FfmpegJobTracker.complete(jobId)
                                     updateNotification(jobId, filename, 100, "บันทึกแล้ว", ongoing = false)
