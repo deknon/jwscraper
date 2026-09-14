@@ -21,6 +21,7 @@ object MuxJobQueue {
         userAgent: String? = null,
         refererUrl: String? = null,
         pageTitle: String? = null,
+        tabId: Long? = null,
         forcedFilename: String? = null
     ): String {
         val appContext = context.applicationContext
@@ -46,7 +47,8 @@ object MuxJobQueue {
             sourceUrl = url,
             refererUrl = refererUrl,
             userAgent = ua,
-            pageTitle = pageTitle
+            pageTitle = pageTitle,
+            tabId = tabId
         )
         Log.i(TAG, "enqueued $jobId ($filename forced=${!forcedFilename.isNullOrBlank()})")
         pump(appContext)
@@ -88,6 +90,7 @@ object MuxJobQueue {
                     userAgent = next.userAgent ?: DownloadHelper.MOBILE_CHROME_UA,
                     refererUrl = next.refererUrl,
                     pageTitle = next.pageTitle,
+                    tabId = next.tabId,
                     forceFilename = lockedFilenameIds.contains(next.id)
                 )
             }

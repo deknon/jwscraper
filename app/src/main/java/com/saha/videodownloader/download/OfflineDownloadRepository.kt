@@ -128,7 +128,8 @@ class OfflineDownloadRepository(context: Context) {
                 url = sourceUrl,
                 userAgent = previous?.userAgent,
                 refererUrl = previous?.refererUrl,
-                pageTitle = previous?.pageTitle
+                pageTitle = previous?.pageTitle,
+                tabId = previous?.tabId
             )
         }
     }

@@ -74,8 +74,10 @@ class FfmpegMuxService : Service() {
                     ?: DownloadHelper.MOBILE_CHROME_UA
                 val refererUrl = intent.getStringExtra(EXTRA_REFERER_URL)
                 val pageTitle = intent.getStringExtra(EXTRA_PAGE_TITLE)
+                val tabId = intent.getLongExtra(EXTRA_TAB_ID, Long.MIN_VALUE)
+                    .takeUnless { it == Long.MIN_VALUE }
                 val forceFilename = intent.getBooleanExtra(EXTRA_FORCE_FILENAME, false)
-                startMux(jobId, url, filename, userAgent, refererUrl, pageTitle, forceFilename)
+                startMux(jobId, url, filename, userAgent, refererUrl, pageTitle, tabId, forceFilename)
             }
         }
         return START_STICKY
@@ -88,6 +90,7 @@ class FfmpegMuxService : Service() {
         userAgent: String,
         refererUrl: String?,
         pageTitle: String?,
+        tabId: Long?,
         forceFilename: Boolean
     ) {
         activeJobs.incrementAndGet()
@@ -145,7 +148,8 @@ class FfmpegMuxService : Service() {
                         pageUrl = refererUrl,
                         userAgent = userAgent,
                         defaultExt = ".mp4",
-                        probeNetwork = true
+                        probeNetwork = true,
+                        tabId = tabId
                     )
                     if (filename != provisionalFilename) {
                         FfmpegJobTracker.updateTitle(jobId, filename)
@@ -155,11 +159,12 @@ class FfmpegMuxService : Service() {
                 val outputFile = File(workDir, filename)
                 if (outputFile.exists()) outputFile.delete()
 
-                val requestHeaders = CapturedMediaHeaders.mergeFor(url, refererUrl, userAgent)
+                val requestHeaders = CapturedMediaHeaders.mergeFor(url, refererUrl, userAgent, tabId)
                 val prepared = HlsPlaylistPreparer.prepare(
                     mediaUrl = url,
                     pageUrl = refererUrl,
                     userAgent = userAgent,
+                    tabId = tabId,
                     workDir = workDir
                 )
                 val absolutePlaylist = prepared.localPlaylist
@@ -493,6 +498,7 @@ class FfmpegMuxService : Service() {
         const val EXTRA_USER_AGENT = "extra_user_agent"
         const val EXTRA_REFERER_URL = "extra_referer_url"
         const val EXTRA_PAGE_TITLE = "extra_page_title"
+        const val EXTRA_TAB_ID = "extra_tab_id"
         const val EXTRA_FORCE_FILENAME = "extra_force_filename"
         private const val NOTIFICATION_ID = 42
         private const val NOTIFICATION_GROUP = "mux_jobs"
@@ -503,6 +509,7 @@ class FfmpegMuxService : Service() {
             userAgent: String? = null,
             refererUrl: String? = null,
             pageTitle: String? = null,
+            tabId: Long? = null,
             forcedFilename: String? = null
         ): String = MuxJobQueue.enqueue(
             context = context,
@@ -510,6 +517,7 @@ class FfmpegMuxService : Service() {
             userAgent = userAgent,
             refererUrl = refererUrl,
             pageTitle = pageTitle,
+            tabId = tabId,
             forcedFilename = forcedFilename
         )
 
@@ -521,6 +529,7 @@ class FfmpegMuxService : Service() {
             userAgent: String,
             refererUrl: String?,
             pageTitle: String?,
+            tabId: Long?,
             forceFilename: Boolean = false
         ) {
             val appContext = context.applicationContext
@@ -532,6 +541,7 @@ class FfmpegMuxService : Service() {
                 putExtra(EXTRA_USER_AGENT, userAgent)
                 putExtra(EXTRA_REFERER_URL, refererUrl)
                 putExtra(EXTRA_PAGE_TITLE, pageTitle)
+                tabId?.let { putExtra(EXTRA_TAB_ID, it) }
                 putExtra(EXTRA_FORCE_FILENAME, forceFilename)
             }
             try {

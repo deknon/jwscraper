@@ -25,9 +25,10 @@ object VideoMetaProber {
         url: String,
         type: VideoType,
         pageUrl: String?,
-        userAgent: String
+        userAgent: String,
+        tabId: Long? = null
     ): Meta {
-        val headers = CapturedMediaHeaders.mergeFor(url, pageUrl, userAgent)
+        val headers = CapturedMediaHeaders.mergeFor(url, pageUrl, userAgent, tabId)
         return when (type) {
             VideoType.HLS -> probeHls(url, headers)
             VideoType.MP4, VideoType.UNKNOWN -> probeDirect(url, headers)
