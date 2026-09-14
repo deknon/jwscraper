@@ -12,8 +12,8 @@ android {
         applicationId = "com.saha.videodownloader"
         minSdk = 24
         targetSdk = 34
-        versionCode = 20
-        versionName = "1.0.20"
+        versionCode = 21
+        versionName = "1.0.21"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
@@ -60,6 +60,12 @@ android {
 
     buildFeatures {
         compose = true
+    }
+
+    lint {
+        // androidx.lifecycle's NullSafeMutableLiveData detector crashes on this
+        // AGP/Kotlin combo and fails assembleRelease (known lint-tool bug).
+        disable += "NullSafeMutableLiveData"
     }
 
     packaging {
